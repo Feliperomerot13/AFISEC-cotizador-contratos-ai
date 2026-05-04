@@ -1,0 +1,243 @@
+import { z } from "zod";
+import { CONTRACT_STATES, DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
+import {
+  normalizeCurrency,
+  normalizeDate,
+  normalizeInteger,
+  normalizeNumber,
+  normalizeText,
+} from "@/lib/normalizers";
+
+const confidenceSchema = z.enum(["alta", "media", "baja"]);
+const coverageValidityTypeSchema = z.enum(["contractual", "post_contractual"]);
+const coverageValidityBaseSchema = z.enum([
+  "fecha_inicio_contrato",
+  "fecha_fin_contrato",
+  "acta_recibo_final",
+  "firma_contrato",
+  "otra",
+]);
+const pageSchema = z.number().int().positive().nullable();
+const sourceSchema = z.string().nullable();
+const dateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .nullable();
+const subcoverageSchema = z.object({
+  nombre: z.string(),
+  porcentaje_sublimite: z.number().nullable(),
+  valor_sublimite: z.number().nullable(),
+  origen: z.enum(["contrato", "regla_plantilla_afisec"]),
+  calculable: z.boolean(),
+  requiere_revision: z.boolean(),
+  fuente_texto: z.string().nullable(),
+  fuente_pagina: z.number().int().positive().nullable(),
+});
+
+const sourcedValueSchema = z
+  .object({
+    valor: z.string().nullable(),
+    confianza: confidenceSchema,
+    pagina: pageSchema,
+    fuente: sourceSchema,
+  })
+  .strict();
+
+export const aiExtractionSchema = z
+  .object({
+    numero_contrato: sourcedValueSchema,
+    tipo_contrato: z
+      .object({
+        valor: z.enum(["estatal", "particular"]).nullable(),
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    contratante: z
+      .object({
+        nombre: z.string().nullable(),
+        nit: z.string().nullable(),
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    contratista: z
+      .object({
+        nombre: z.string().nullable(),
+        nit: z.string().nullable(),
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    objeto: sourcedValueSchema,
+    valor_contrato: z
+      .object({
+        valor_numerico: z.number().nonnegative().nullable(),
+        moneda: z.string().nullable(),
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    fecha_inicio: z
+      .object({
+        valor: dateSchema,
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    fecha_fin: z
+      .object({
+        valor: dateSchema,
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    plazo: sourcedValueSchema,
+    garantias: z.array(
+      z
+        .object({
+          tipo_amparo: z.string().min(1),
+          porcentaje: z.number().nonnegative().nullable(),
+          cuantia_fija: z.number().nonnegative().nullable(),
+          valor_asegurado: z.number().nonnegative().nullable(),
+          tipo_vigencia: coverageValidityTypeSchema.nullable(),
+          base_vigencia: coverageValidityBaseSchema.nullable(),
+          dias_adicionales: z.number().int().nonnegative().nullable(),
+          fecha_desde: dateSchema,
+          fecha_hasta: dateSchema,
+          fuente_texto: sourceSchema,
+          fuente_pagina: pageSchema,
+          confianza: confidenceSchema,
+        })
+        .strict(),
+    ),
+    campos_no_encontrados: z.array(z.string()),
+    alertas: z.array(z.string()),
+  })
+  .strict();
+
+export type AIExtraction = z.infer<typeof aiExtractionSchema>;
+export type AIConfidence = z.infer<typeof confidenceSchema>;
+export type AICoverageValidityType = z.infer<
+  typeof coverageValidityTypeSchema
+>;
+export type AICoverageValidityBase = z.infer<
+  typeof coverageValidityBaseSchema
+>;
+
+const requiredTrimmedString = (minLength: number, message: string) =>
+  z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() : value),
+    z.string().min(minLength, message),
+  );
+
+const emptyToNullString = z.preprocess((value) => {
+  return normalizeText(value);
+}, z.string().nullable());
+
+const nullableNumber = z.preprocess((value) => {
+  return normalizeNumber(value);
+}, z.number().nonnegative().nullable());
+
+const nullableInteger = z.preprocess((value) => {
+  return normalizeInteger(value);
+}, z.number().int().nonnegative().nullable());
+
+const nullableDateString = z.preprocess((value) => {
+  return normalizeDate(value);
+}, dateSchema);
+
+const currencyString = z.preprocess((value) => {
+  return normalizeCurrency(value);
+}, z.string().min(1));
+
+const emptyToNullCoverageValidityType = z.preprocess((value) => {
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
+
+  return value;
+}, coverageValidityTypeSchema.nullable());
+
+const emptyToNullCoverageValidityBase = z.preprocess((value) => {
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
+
+  return value;
+}, coverageValidityBaseSchema.nullable());
+
+export const uploadFormSchema = z.object({
+  nombreCliente: requiredTrimmedString(
+    2,
+    "El nombre del cliente es obligatorio.",
+  ),
+  nitCliente: requiredTrimmedString(3, "El NIT del cliente es obligatorio."),
+  ejecutivo: z.enum(EXECUTIVES),
+  tipoDocumento: z.enum(DOCUMENT_TYPES),
+});
+
+export const validateContractSchema = z.object({
+  validado_por: z.enum(EXECUTIVES),
+  contrato: z.object({
+    numero_contrato: emptyToNullString,
+    objeto: emptyToNullString,
+    tipo_contrato: z.enum(["estatal", "particular"]).nullable(),
+    valor_contrato: nullableNumber,
+    moneda: currencyString,
+    fecha_inicio: nullableDateString,
+    fecha_fin: nullableDateString,
+    plazo: emptyToNullString,
+    contratante: emptyToNullString,
+    contratante_nit: emptyToNullString,
+    contratista: emptyToNullString,
+    contratista_nit: emptyToNullString,
+  }),
+  amparos: z.array(
+    z.object({
+      id: z.string().optional(),
+      tipo_amparo: requiredTrimmedString(
+        1,
+        "El tipo de amparo es obligatorio.",
+      ),
+      porcentaje: nullableNumber,
+      cuantia_fija: nullableNumber,
+      valor_base_calculo: nullableNumber,
+      modo_calculo: emptyToNullString,
+      valor_asegurado: nullableNumber,
+      tasa: nullableNumber,
+      dias_vigencia: nullableInteger,
+      iva_porcentaje: nullableNumber,
+      prima_neta: nullableNumber,
+      impuesto: nullableNumber,
+      prima_total: nullableNumber,
+      tasa_manual: z.boolean().default(false),
+      tipo_vigencia: emptyToNullCoverageValidityType,
+      base_vigencia: emptyToNullCoverageValidityBase,
+      fecha_desde: nullableDateString,
+      fecha_hasta: nullableDateString,
+      dias_adicionales: nullableInteger,
+      fuente_pagina: nullableInteger,
+      fuente_texto: emptyToNullString,
+      confianza: confidenceSchema.nullable(),
+      requiere_revision: z.boolean().default(false),
+      motivo_revision: emptyToNullString,
+      subamparos: z.array(subcoverageSchema).default([]),
+    }),
+  ),
+});
+
+export const contractListQuerySchema = z.object({
+  ejecutivo: z.enum(EXECUTIVES).optional(),
+  estado: z.enum(CONTRACT_STATES).optional(),
+  search: z.string().optional(),
+  vencen: z.enum(["30"]).optional(),
+});
+
+export type ValidateContractPayload = z.infer<typeof validateContractSchema>;
