@@ -63,6 +63,8 @@ const COVERAGE_VALIDITY_BASES = [
   "fecha_inicio_contrato",
   "fecha_fin_contrato",
   "acta_recibo_final",
+  "fecha_explicita",
+  "no_determinada",
   "firma_contrato",
   "otra",
 ] as const;

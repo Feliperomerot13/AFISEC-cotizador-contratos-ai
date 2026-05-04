@@ -6,11 +6,14 @@ export function formatCurrency(value: number | null | undefined, currency = "COP
     return "Sin valor";
   }
 
+  const roundedValue = Math.round(Number(value));
+
   return new Intl.NumberFormat("es-CO", {
     style: "currency",
     currency,
     maximumFractionDigits: 0,
-  }).format(value);
+    minimumFractionDigits: 0,
+  }).format(roundedValue);
 }
 
 export function formatDate(value: unknown) {

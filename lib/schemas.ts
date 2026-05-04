@@ -14,6 +14,8 @@ const coverageValidityBaseSchema = z.enum([
   "fecha_inicio_contrato",
   "fecha_fin_contrato",
   "acta_recibo_final",
+  "fecha_explicita",
+  "no_determinada",
   "firma_contrato",
   "otra",
 ]);
@@ -201,7 +203,7 @@ export const validateContractSchema = z.object({
   }),
   amparos: z.array(
     z.object({
-      id: z.string().optional(),
+      id: z.coerce.number().int().positive().optional(),
       tipo_amparo: requiredTrimmedString(
         1,
         "El tipo de amparo es obligatorio.",

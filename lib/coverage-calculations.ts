@@ -2,6 +2,13 @@ import { DEFAULT_IVA_PERCENTAGE, DEFAULT_RCE_RATE } from "@/lib/constants";
 import { normalizeDate, normalizeNumber, normalizeText } from "@/lib/normalizers";
 import type { AIConfidence, AIExtraction } from "@/lib/schemas";
 
+type CoverageValidityBase =
+  | "fecha_inicio_contrato"
+  | "fecha_fin_contrato"
+  | "acta_recibo_final"
+  | "fecha_explicita"
+  | "no_determinada";
+
 export type CoverageInput = CoverageCalculationInput;
 
 export type ContractCoverageContext = {
@@ -45,7 +52,7 @@ export type NormalizedCoverage = {
   prima_total: number | null;
   tasa_manual: boolean;
   tipo_vigencia: string | null;
-  base_vigencia: string | null;
+  base_vigencia: CoverageValidityBase;
   fecha_desde: string | null;
   fecha_hasta: string | null;
   dias_adicionales: number | null;
@@ -62,6 +69,8 @@ export function normalizeCoverage(
   contract: ContractCoverageContext,
 ): NormalizedCoverage {
   const reasons = new Set<string>();
+  const explicitStartDate = normalizeDate(coverage.fecha_desde);
+  const explicitEndDate = normalizeDate(coverage.fecha_hasta);
   const isRce = isCivilLiabilityCoverage(
     coverage.tipo_amparo,
     coverage.fuente_texto,
@@ -74,9 +83,32 @@ export function normalizeCoverage(
     contract,
     reasons,
   );
-  const startsAt = calculateStartDate(preparedCoverage, contract, reasons);
-  const endsAt = calculateEndDate(preparedCoverage, contract, reasons);
+  const startsAt = calculateStartDate(
+    preparedCoverage,
+    contract,
+    reasons,
+    explicitStartDate,
+  );
+  const endsAt = calculateEndDate(
+    preparedCoverage,
+    contract,
+    reasons,
+    explicitStartDate,
+    explicitEndDate,
+  );
   const validityDays = calculateValidityDays(startsAt, endsAt, reasons);
+  if (isServiceQualityCoverage(preparedCoverage) && explicitStartDate === null) {
+    reasons.add(
+      "La fecha del Acta de Recibo Final no está disponible; se usa la fecha fin del contrato como estimación para cotización.",
+    );
+  }
+  const baseVigencia = resolveCoverageValidityBase(
+    preparedCoverage,
+    contract,
+    explicitStartDate,
+    explicitEndDate,
+    reasons,
+  );
   const ivaPercentage =
     normalizeNumber(preparedCoverage.iva_porcentaje) ?? DEFAULT_IVA_PERCENTAGE;
   const tasa =
@@ -99,7 +131,7 @@ export function normalizeCoverage(
     reasons.add("Falta porcentaje o cuantía fija para calcular el amparo.");
   }
 
-  if (preparedCoverage.base_vigencia === "acta_recibo_final") {
+  if (isServiceQualityCoverage(preparedCoverage)) {
     reasons.add("La vigencia depende del acta de recibo final.");
   }
 
@@ -148,7 +180,7 @@ export function normalizeCoverage(
     prima_total: premium.prima_total,
     tasa_manual: Boolean(preparedCoverage.tasa_manual),
     tipo_vigencia: preparedCoverage.tipo_vigencia ?? null,
-    base_vigencia: preparedCoverage.base_vigencia ?? null,
+    base_vigencia: baseVigencia,
     fecha_desde: startsAt,
     fecha_hasta: endsAt,
     dias_adicionales: getEffectiveAdditionalDays(preparedCoverage),
@@ -221,7 +253,7 @@ function normalizeCivilLiabilityInput(
     valor_asegurado: fixedAmount,
     tasa: normalizeNumber(coverage.tasa) ?? DEFAULT_RCE_RATE,
     tipo_vigencia: coverage.tipo_vigencia ?? "contractual",
-    base_vigencia: coverage.base_vigencia ?? "fecha_fin_contrato",
+    base_vigencia: "fecha_fin_contrato",
     dias_adicionales: normalizeNumber(coverage.dias_adicionales) ?? 30,
     fecha_desde: null,
     fecha_hasta: null,
@@ -303,17 +335,26 @@ function calculateStartDate(
   coverage: CoverageInput,
   contract: ContractCoverageContext,
   reasons: Set<string>,
+  explicitStartDate: string | null,
 ) {
-  const explicitStartDate = normalizeDate(coverage.fecha_desde);
-
   if (explicitStartDate !== null) {
     return explicitStartDate;
   }
 
+  if (isServiceQualityCoverage(coverage)) {
+    if (contract.fechaFin) {
+      return contract.fechaFin;
+    }
+
+    reasons.add("Falta fecha fin del contrato para calcular fecha desde.");
+    return null;
+  }
+
   if (
-    (coverage.tipo_vigencia === "contractual" ||
+    (isContractEndBasedCoverage(coverage) ||
+      coverage.tipo_vigencia === "contractual" ||
       coverage.tipo_vigencia === "post_contractual" ||
-      isPayrollCoverage(coverage.tipo_amparo)) &&
+      isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) &&
     contract.fechaInicio
   ) {
     return contract.fechaInicio;
@@ -327,26 +368,33 @@ function calculateEndDate(
   coverage: CoverageInput,
   contract: ContractCoverageContext,
   reasons: Set<string>,
+  explicitStartDate: string | null,
+  explicitEndDate: string | null,
 ) {
-  if (coverage.base_vigencia === "acta_recibo_final") {
-    reasons.add(
-      "La vigencia se cuenta desde acta de recibo final y no existe esa fecha.",
-    );
-    return null;
-  }
-
-  const explicitEndDate = normalizeDate(coverage.fecha_hasta);
-
   if (explicitEndDate !== null) {
     return explicitEndDate;
+  }
+
+  if (isServiceQualityCoverage(coverage)) {
+    const startDate = explicitStartDate ?? contract.fechaFin;
+    const contractDays = calculateContractualDays(contract);
+    const additionalDays = getEffectiveAdditionalDays(coverage) ?? 0;
+
+    if (startDate === null || contractDays === null) {
+      reasons.add("Falta plazo contractual para calcular fecha hasta.");
+      return null;
+    }
+
+    return addDays(startDate, contractDays + additionalDays);
   }
 
   const additionalDays = getEffectiveAdditionalDays(coverage);
 
   if (
-    (coverage.tipo_vigencia === "contractual" ||
+    (isContractEndBasedCoverage(coverage) ||
+      coverage.tipo_vigencia === "contractual" ||
       coverage.tipo_vigencia === "post_contractual" ||
-      isPayrollCoverage(coverage.tipo_amparo)) &&
+      isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) &&
     contract.fechaFin
   ) {
     return addDays(contract.fechaFin, additionalDays ?? 0);
@@ -425,8 +473,16 @@ function calculatePremium({
 }
 
 function getEffectiveAdditionalDays(coverage: CoverageInput) {
-  if (isPayrollCoverage(coverage.tipo_amparo)) {
+  if (isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) {
     return 1095;
+  }
+
+  if (isServiceQualityCoverage(coverage)) {
+    return 30;
+  }
+
+  if (isContractEndBasedCoverage(coverage)) {
+    return 30;
   }
 
   const additionalDays = normalizeNumber(coverage.dias_adicionales);
@@ -445,6 +501,181 @@ function getEffectiveAdditionalDays(coverage: CoverageInput) {
   return null;
 }
 
+function resolveCoverageValidityBase(
+  coverage: CoverageInput,
+  contract: ContractCoverageContext,
+  explicitStartDate: string | null,
+  explicitEndDate: string | null,
+  reasons: Set<string>,
+): CoverageValidityBase {
+  if (isServiceQualityCoverage(coverage)) {
+    return "acta_recibo_final";
+  }
+
+  if (explicitStartDate !== null || explicitEndDate !== null) {
+    return "fecha_explicita";
+  }
+
+  if (isContractEndBasedCoverage(coverage)) {
+    return "fecha_fin_contrato";
+  }
+
+  const normalizedBase = normalizeBaseVigencia(coverage.base_vigencia);
+
+  if (
+    normalizedBase === "fecha_inicio_contrato" ||
+    normalizedBase === "fecha_fin_contrato"
+  ) {
+    return normalizedBase;
+  }
+
+  if (normalizedBase === "no_determinada") {
+    reasons.add("No se pudo determinar la base de vigencia.");
+    return "no_determinada";
+  }
+
+  if (coverage.tipo_vigencia === "contractual" ||
+      coverage.tipo_vigencia === "post_contractual") {
+    if (contract.fechaFin) {
+      return "fecha_fin_contrato";
+    }
+
+    reasons.add("No se pudo determinar la base de vigencia.");
+    return "no_determinada";
+  }
+
+  reasons.add("No se pudo determinar la base de vigencia.");
+  return "no_determinada";
+}
+
+function normalizeBaseVigencia(value: string | null | undefined) {
+  const normalized = (normalizeText(value, null) ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const allowedValues: CoverageValidityBase[] = [
+    "fecha_inicio_contrato",
+    "fecha_fin_contrato",
+    "acta_recibo_final",
+    "fecha_explicita",
+    "no_determinada",
+  ];
+
+  return (
+    allowedValues.find(
+      (allowed) => normalizeBaseValue(allowed) === normalized,
+    ) ??
+    null
+  );
+}
+
+function isContractEndBasedCoverage(coverage: CoverageInput) {
+  return (
+    isComplianceCoverage(coverage) ||
+    isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto) ||
+    isCivilLiabilityCoverage(coverage.tipo_amparo, coverage.fuente_texto) ||
+    isPersonalAccidentCoverage(coverage) ||
+    isMedicalExpenseCoverage(coverage) ||
+    isFuneralAidCoverage(coverage)
+  );
+}
+
+function isComplianceCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, ["cumplimiento"]);
+}
+
+function isPersonalAccidentCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, [
+    "accidentes personales",
+    "accidente personal",
+  ]);
+}
+
+function isMedicalExpenseCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, [
+    "gastos medicos",
+    "gastos medicos y auxilio funerario",
+    "gastos medicos y funeral",
+  ]);
+}
+
+function isFuneralAidCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, [
+    "auxilio funerario",
+    "gastos funerarios",
+    "funerario",
+  ]);
+}
+
+function isServiceQualityCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, [
+    "calidad del servicio",
+    "calidad de servicio",
+  ]);
+}
+
+function isPayrollCoverage(
+  type: string | null | undefined,
+  source: string | null | undefined,
+) {
+  return coverageTextIncludes(
+    { tipo_amparo: type ?? "", fuente_texto: source ?? null },
+    ["salarios", "prestaciones"],
+  );
+}
+
+function coverageTextIncludes(
+  coverage: Pick<CoverageInput, "tipo_amparo" | "fuente_texto">,
+  markers: string[],
+) {
+  const text = normalizeBaseValue(
+    `${coverage.tipo_amparo ?? ""} ${coverage.fuente_texto ?? ""}`,
+  );
+
+  if (!text) {
+    return false;
+  }
+
+  return markers.some((marker) => text.includes(marker));
+}
+
+function normalizeBaseValue(value: string | null | undefined) {
+  const text = normalizeText(value, null);
+
+  if (text === null) {
+    return "";
+  }
+
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function calculateContractualDays(contract: ContractCoverageContext) {
+  if (!contract.fechaInicio || !contract.fechaFin) {
+    return null;
+  }
+
+  const start = new Date(`${contract.fechaInicio}T00:00:00.000Z`);
+  const end = new Date(`${contract.fechaFin}T00:00:00.000Z`);
+
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+    return null;
+  }
+
+  const days = Math.round(
+    (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
+  );
+
+  return days > 0 ? days : null;
+}
+
 function addDays(date: string, days: number) {
   const parsedDate = new Date(`${date}T00:00:00.000Z`);
   parsedDate.setUTCDate(parsedDate.getUTCDate() + days);
@@ -453,12 +684,6 @@ function addDays(date: string, days: number) {
 
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
-function isPayrollCoverage(type: string | null | undefined) {
-  const normalized = normalizeText(type) ?? "";
-
-  return normalized.includes("salarios") || normalized.includes("prestaciones");
 }
 
 function hasPerUnitCondition(source: string | null | undefined) {

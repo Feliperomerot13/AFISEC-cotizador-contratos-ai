@@ -61,7 +61,7 @@ type ContractForm = {
 };
 
 type EditableAmparo = {
-  id?: string;
+  id?: string | number;
   tipo_amparo: string;
   porcentaje: string;
   cuantia_fija: string;
@@ -209,6 +209,10 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           },
           amparos: amparos.map((amparo) => {
             const calculation = calculateEditableAmparo(amparo, form);
+            const motivoRevision = mergeReviewReasons(
+              amparo.motivo_revision,
+              calculation.motivo_revision,
+            );
 
             return {
               id: amparo.id,
@@ -234,14 +238,8 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               fuente_texto: amparo.fuente_texto || null,
               subamparos: calculation.subamparos,
               confianza: amparo.confianza || null,
-              requiere_revision:
-                amparo.requiere_revision || calculation.requiere_revision,
-              motivo_revision: [
-                amparo.motivo_revision,
-                calculation.motivo_revision,
-              ]
-                .filter(Boolean)
-                .join(" ") || null,
+              requiere_revision: Boolean(motivoRevision),
+              motivo_revision: motivoRevision || null,
             };
           }),
         }),
@@ -570,8 +568,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       onChange={(value) => updateAmparo(index, "cuantia_fija", value)}
                     />
                     <EditableAmparoField
-                      label="Tasa decimal"
-                      type="number"
+                      label="Tasa %"
+                      type="text"
+                      inputMode="decimal"
                       value={amparo.tasa}
                       onChange={(value) => updateAmparo(index, "tasa", value)}
                     />
@@ -670,11 +669,11 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       value={`${formatPercent(calculation.iva_porcentaje)}%`}
                     />
                     <ReadOnlyMetric
-                      label="Tasa"
+                      label="Tasa %"
                       value={
-                        amparo.tasa
-                          ? `${amparo.tasa}${amparo.tasa_manual ? " manual" : ""}`
-                          : "Sin tasa"
+                        decimalFromRatePercent(amparo.tasa) === null
+                          ? "Sin tasa"
+                          : `${formatRatePercent(decimalFromRatePercent(amparo.tasa))}%${amparo.tasa_manual ? " manual" : ""}`
                       }
                     />
                   </div>
@@ -691,7 +690,10 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       Motivo de revisión
                     </span>
                     <textarea
-                      value={amparo.motivo_revision}
+                      value={mergeReviewReasons(
+                        amparo.motivo_revision,
+                        calculation.motivo_revision,
+                      )}
                       onChange={(event) =>
                         updateAmparo(index, "motivo_revision", event.target.value)
                       }
@@ -809,11 +811,13 @@ function EditableAmparoField({
   value,
   onChange,
   type = "text",
+  inputMode,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: "text" | "number" | "date";
+  inputMode?: "decimal" | "numeric";
 }) {
   return (
     <label className="space-y-2">
@@ -821,6 +825,7 @@ function EditableAmparoField({
       <input
         type={type}
         step={type === "number" ? "any" : undefined}
+        inputMode={inputMode}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
@@ -979,7 +984,7 @@ function amparoToEditable(
     cuantia_fija: amparo.cuantia_fija === null ? "" : String(amparo.cuantia_fija),
     valor_asegurado:
       amparo.valor_asegurado === null ? "" : String(amparo.valor_asegurado),
-    tasa: tasa === null ? "" : String(tasa),
+    tasa: tasa === null ? "" : formatRatePercent(tasa),
     tasa_manual: amparo.tasa_manual ?? false,
     iva_porcentaje: String(amparo.iva_porcentaje ?? DEFAULT_IVA_PERCENTAGE),
     tipo_vigencia:
@@ -1072,6 +1077,35 @@ function decimalFromPercent(value: string | number | null | undefined) {
   return parsed === null ? null : parsed / 100;
 }
 
+function decimalFromRatePercent(value: string | number | null | undefined) {
+  const parsed = numberOrNull(value);
+  return parsed === null ? null : parsed / 100;
+}
+
+function formatRatePercent(value: number | null | undefined) {
+  if (value === null || typeof value === "undefined") {
+    return "";
+  }
+
+  return new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    useGrouping: false,
+  }).format(value * 100);
+}
+
+function mergeReviewReasons(
+  ...parts: Array<string | null | undefined>
+) {
+  return parts
+    .filter((part): part is string => Boolean(part))
+    .join(" ")
+    .split("Falta tasa para calcular prima.")
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm) {
   return normalizeCoverage(
     {
@@ -1079,7 +1113,7 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
       porcentaje: decimalFromPercent(amparo.porcentaje),
       cuantia_fija: numberOrNull(amparo.cuantia_fija),
       valor_asegurado: numberOrNull(amparo.valor_asegurado),
-      tasa: numberOrNull(amparo.tasa),
+      tasa: decimalFromRatePercent(amparo.tasa),
       tasa_manual: amparo.tasa_manual,
       iva_porcentaje:
         numberOrNull(amparo.iva_porcentaje) ?? DEFAULT_IVA_PERCENTAGE,
