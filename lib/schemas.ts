@@ -3,6 +3,7 @@ import { CONTRACT_STATES, DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
 import {
   normalizeCurrency,
   normalizeDate,
+  normalizeBoolean,
   normalizeInteger,
   normalizeNumber,
   normalizeText,
@@ -155,6 +156,14 @@ const nullableDateString = z.preprocess((value) => {
   return normalizeDate(value);
 }, dateSchema);
 
+const nullableBoolean = z.preprocess((value) => {
+  if (value === null || typeof value === "undefined" || value === "") {
+    return null;
+  }
+
+  return normalizeBoolean(value, false);
+}, z.boolean().nullable());
+
 const currencyString = z.preprocess((value) => {
   return normalizeCurrency(value);
 }, z.string().min(1));
@@ -192,6 +201,8 @@ export const validateContractSchema = z.object({
     objeto: emptyToNullString,
     tipo_contrato: z.enum(["estatal", "particular"]).nullable(),
     valor_contrato: nullableNumber,
+    base_calculo_amparos: nullableNumber,
+    base_calculo_incluye_iva: nullableBoolean,
     moneda: currencyString,
     fecha_inicio: nullableDateString,
     fecha_fin: nullableDateString,

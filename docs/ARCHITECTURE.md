@@ -207,11 +207,15 @@ prima_total = prima_neta + impuesto
 
 `dias_adicionales` conserva la regla contractual, por ejemplo 30 días o 1095 días. `dias_vigencia` es la diferencia real entre `fecha_desde` y `fecha_hasta`; solo este valor alimenta la prima.
 
+La pantalla de validación trata la información general del contrato como fuente de verdad para liquidar amparos. `contratos.base_calculo_amparos` guarda la base confirmada por la comercial y `contratos.base_calculo_incluye_iva` indica si esa base incluye IVA; si está en `null`, queda como no determinado. Al corregir base, fecha inicio o fecha fin en la sección general, los amparos se recalculan con esos datos salvo fechas manuales explícitas.
+
+En la UI de cada amparo se muestran `fecha_desde`, fecha fin del contrato/base, `dias_adicionales`, `fecha_hasta` calculada y `dias_vigencia`. El usuario cambia `dias_adicionales` y el sistema suma automáticamente esos días sobre la base correcta. Para amparos postcontractuales que dependen de acta de recibo final o cierre, si no existe esa fecha, se usa `fecha_fin` del contrato como estimación de cotización y se conserva `requiere_revision`.
+
 La UI no muestra la tabla de `tasas_referencia`. Esa tabla queda como fuente interna para prediligenciar la tasa editable del amparo. Si la comercial cambia la tasa en pantalla, `tasa_manual` queda marcada en la fila validada.
 
 Responsabilidad Civil Extracontractual se modela como un solo amparo principal. La prima se calcula únicamente sobre la línea calculable PLO y la cuantía principal de la póliza. Los demás elementos exigidos por el contrato, como contratistas/subcontratistas, RC patronal, RC cruzada y vehículos propios/no propios, se guardan en `amparos.subamparos` como coberturas informativas. Cuando un sublímite proviene de la plantilla AFISEC y no del texto contractual, queda con `origen = regla_plantilla_afisec` y `requiere_revision = true`.
 
-Para otrosíes y prórrogas, se propone la tabla `modificaciones_contractuales` y la relación opcional `amparos.modificacion_id`. La migración propuesta está en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql`; no automatiza todavía la gestión de otrosíes en UI.
+Para otrosíes y prórrogas, se propone la tabla `modificaciones_contractuales` y la relación opcional `amparos.modificacion_id`. Las migraciones propuestas están en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql` y `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql`; no automatizan todavía la gestión de otrosíes en UI.
 
 ## Validación del JSON de IA
 

@@ -105,6 +105,59 @@ assert.equal(complianceCoverage.prima_neta, 1640591.55);
 assert.equal(complianceCoverage.impuesto, 311712.39);
 assert.equal(complianceCoverage.prima_total, 1952303.94);
 
+const changedAdditionalDaysCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 60,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto: "Cumplimiento equivalente al treinta por ciento del contrato.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(changedAdditionalDaysCoverage.fecha_hasta, "2025-04-03");
+assert.equal(changedAdditionalDaysCoverage.dias_vigencia, 426);
+
+const confirmedBaseCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 30,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto: "Cumplimiento equivalente al treinta por ciento del contrato.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+  },
+  {
+    valorContrato: 2000,
+    baseCalculoAmparos: 1000,
+    fechaInicio: "2024-01-01",
+    fechaFin: "2024-12-31",
+  },
+);
+
+assert.equal(confirmedBaseCoverage.valor_base_calculo, 1000);
+assert.equal(confirmedBaseCoverage.valor_asegurado, 300);
+
 const explicitValidityCoverage = normalizeCoverage(
   {
     tipo_amparo: "Gastos médicos y auxilio funerario",

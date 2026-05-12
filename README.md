@@ -110,6 +110,8 @@ prima_total = prima_neta + impuesto
 
 Apply `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql` before using the liquidation fields. It adds premium fields to `amparos` and proposes `modificaciones_contractuales` for future otrosí/prórroga/adición support.
 
+Apply `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql` to persist the confirmed coverage calculation base at contract level. `base_calculo_amparos` is the value used by percentage-based amparos, and `base_calculo_incluye_iva` records whether that base includes VAT/IVA or remains undetermined.
+
 ## Security Notes
 
 - Azure credentials never reach client components.

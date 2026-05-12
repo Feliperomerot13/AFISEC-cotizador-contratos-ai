@@ -13,6 +13,7 @@ export type CoverageInput = CoverageCalculationInput;
 
 export type ContractCoverageContext = {
   valorContrato: number | null;
+  baseCalculoAmparos?: number | null;
   fechaInicio: string | null;
   fechaFin: string | null;
 };
@@ -97,7 +98,10 @@ export function normalizeCoverage(
     explicitEndDate,
   );
   const validityDays = calculateValidityDays(startsAt, endsAt, reasons);
-  if (isServiceQualityCoverage(preparedCoverage) && explicitStartDate === null) {
+  if (
+    isClosureBasedPostContractualCoverage(preparedCoverage) &&
+    explicitStartDate === null
+  ) {
     reasons.add(
       "La fecha del Acta de Recibo Final no está disponible; se usa la fecha fin del contrato como estimación para cotización.",
     );
@@ -131,7 +135,7 @@ export function normalizeCoverage(
     reasons.add("Falta porcentaje o cuantía fija para calcular el amparo.");
   }
 
-  if (isServiceQualityCoverage(preparedCoverage)) {
+  if (isClosureBasedPostContractualCoverage(preparedCoverage)) {
     reasons.add("La vigencia depende del acta de recibo final.");
   }
 
@@ -200,6 +204,9 @@ function calculateInsuredValue(
 ) {
   const fixedAmount = normalizeNumber(coverage.cuantia_fija);
   const percentage = normalizeNumber(coverage.porcentaje);
+  const calculationBase =
+    normalizeNumber(contract.baseCalculoAmparos) ??
+    normalizeNumber(contract.valorContrato);
 
   if (fixedAmount !== null) {
     return {
@@ -209,11 +216,11 @@ function calculateInsuredValue(
     };
   }
 
-  if (percentage !== null && contract.valorContrato !== null) {
+  if (percentage !== null && calculationBase !== null) {
     return {
-      valor_base_calculo: contract.valorContrato,
+      valor_base_calculo: calculationBase,
       modo_calculo: "porcentaje_valor_contrato",
-      valor_asegurado: roundMoney(contract.valorContrato * percentage),
+      valor_asegurado: roundMoney(calculationBase * percentage),
     };
   }
 
@@ -231,7 +238,7 @@ function calculateInsuredValue(
 
   reasons.add("No hay datos suficientes para calcular el valor asegurado.");
   return {
-    valor_base_calculo: contract.valorContrato,
+    valor_base_calculo: calculationBase,
     modo_calculo: "pendiente_revision",
     valor_asegurado: null,
   };
@@ -341,7 +348,7 @@ function calculateStartDate(
     return explicitStartDate;
   }
 
-  if (isServiceQualityCoverage(coverage)) {
+  if (isClosureBasedPostContractualCoverage(coverage)) {
     if (contract.fechaFin) {
       return contract.fechaFin;
     }
@@ -375,7 +382,7 @@ function calculateEndDate(
     return explicitEndDate;
   }
 
-  if (isServiceQualityCoverage(coverage)) {
+  if (isClosureBasedPostContractualCoverage(coverage)) {
     const startDate = explicitStartDate ?? contract.fechaFin;
     const contractDays = calculateContractualDays(contract);
     const additionalDays = getEffectiveAdditionalDays(coverage) ?? 0;
@@ -473,22 +480,22 @@ function calculatePremium({
 }
 
 function getEffectiveAdditionalDays(coverage: CoverageInput) {
+  const additionalDays = normalizeNumber(coverage.dias_adicionales);
+
+  if (additionalDays !== null) {
+    return Math.trunc(additionalDays);
+  }
+
   if (isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) {
     return 1095;
   }
 
-  if (isServiceQualityCoverage(coverage)) {
+  if (isClosureBasedPostContractualCoverage(coverage)) {
     return 30;
   }
 
   if (isContractEndBasedCoverage(coverage)) {
     return 30;
-  }
-
-  const additionalDays = normalizeNumber(coverage.dias_adicionales);
-
-  if (additionalDays !== null) {
-    return Math.trunc(additionalDays);
   }
 
   if (
@@ -508,7 +515,7 @@ function resolveCoverageValidityBase(
   explicitEndDate: string | null,
   reasons: Set<string>,
 ): CoverageValidityBase {
-  if (isServiceQualityCoverage(coverage)) {
+  if (isClosureBasedPostContractualCoverage(coverage)) {
     return "acta_recibo_final";
   }
 
@@ -616,7 +623,26 @@ function isServiceQualityCoverage(coverage: CoverageInput) {
   return coverageTextIncludes(coverage, [
     "calidad del servicio",
     "calidad de servicio",
+    "calidad de la obra",
+    "calidad obra",
+    "estabilidad de obra",
+    "estabilidad y calidad",
   ]);
+}
+
+function isClosureBasedPostContractualCoverage(coverage: CoverageInput) {
+  return (
+    isServiceQualityCoverage(coverage) ||
+    normalizeBaseVigencia(coverage.base_vigencia) === "acta_recibo_final" ||
+    coverageTextIncludes(coverage, [
+      "a partir del acta de recibo final",
+      "desde el acta de recibo final",
+      "acta de recibo final",
+      "acta de cierre",
+      "a partir de la terminacion del contrato",
+      "a partir de la terminación del contrato",
+    ])
+  );
 }
 
 function isPayrollCoverage(

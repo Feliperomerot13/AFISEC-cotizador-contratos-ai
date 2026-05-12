@@ -42,6 +42,8 @@ export type Database = {
           objeto: string | null;
           tipo_contrato: string | null;
           valor_contrato: number | null;
+          base_calculo_amparos: number | null;
+          base_calculo_incluye_iva: boolean | null;
           moneda: string;
           fecha_inicio: string | null;
           fecha_fin: string | null;
@@ -67,6 +69,8 @@ export type Database = {
           objeto?: string | null;
           tipo_contrato?: string | null;
           valor_contrato?: number | null;
+          base_calculo_amparos?: number | null;
+          base_calculo_incluye_iva?: boolean | null;
           moneda?: string;
           fecha_inicio?: string | null;
           fecha_fin?: string | null;

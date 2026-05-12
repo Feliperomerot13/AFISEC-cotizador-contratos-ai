@@ -55,6 +55,9 @@ export async function PUT(request: Request, { params }: IdContext) {
             },
             {
               valorContrato: payload.contrato.valor_contrato,
+              baseCalculoAmparos:
+                payload.contrato.base_calculo_amparos ??
+                payload.contrato.valor_contrato,
               fechaInicio: payload.contrato.fecha_inicio,
               fechaFin: payload.contrato.fecha_fin,
             },

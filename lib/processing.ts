@@ -141,8 +141,11 @@ export async function processContract(contratoId: string) {
       deployment: env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
       phase: "primary_start",
     });
-    const primary = await extractStructuredContract(
-      env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
+    const primary = applyDeterministicDateFallbacksToResult(
+      await extractStructuredContract(
+        env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
+        extractionContext.text,
+      ),
       extractionContext.text,
     );
     const primaryCriticalMissing = getCriticalMissingFields(primary.extraction);
@@ -184,8 +187,11 @@ export async function processContract(contratoId: string) {
         },
         fallbackDeployment: env.AZURE_OPENAI_DEPLOYMENT_FALLBACK,
       });
-      const fallback = await extractStructuredContract(
-        env.AZURE_OPENAI_DEPLOYMENT_FALLBACK,
+      const fallback = applyDeterministicDateFallbacksToResult(
+        await extractStructuredContract(
+          env.AZURE_OPENAI_DEPLOYMENT_FALLBACK,
+          extractionContext.text,
+        ),
         extractionContext.text,
       );
       const fallbackCriticalMissing = getCriticalMissingFields(
@@ -280,6 +286,7 @@ async function saveStructuredExtraction(
   const coverageMapping = mapExtractionToCoverageMapping(extraction, {
     contratoId,
     valorContrato: extraction.valor_contrato.valor_numerico,
+    baseCalculoAmparos: extraction.valor_contrato.valor_numerico,
     fechaInicio: extraction.fecha_inicio.valor,
     fechaFin: extraction.fecha_fin.valor,
   });
@@ -305,14 +312,17 @@ export function mapExtractionToContractUpdate(extraction: unknown): ContractUpda
   const valorContrato = asRecord(record.valor_contrato);
   const contratante = asRecord(record.contratante);
   const contratista = asRecord(record.contratista);
+  const normalizedContractValue = normalizeNumber(
+    valorContrato.valor_numerico ?? valorContrato.valor ?? record.valor_contrato,
+  );
 
   return {
     numero_contrato: normalizeText(record.numero_contrato),
     objeto: normalizeText(record.objeto),
     tipo_contrato: normalizeContractType(record.tipo_contrato),
-    valor_contrato: normalizeNumber(
-      valorContrato.valor_numerico ?? valorContrato.valor ?? record.valor_contrato,
-    ),
+    valor_contrato: normalizedContractValue,
+    base_calculo_amparos: normalizedContractValue,
+    base_calculo_incluye_iva: inferBaseIncludesIva(valorContrato.fuente),
     moneda: normalizeCurrency(valorContrato.moneda ?? record.moneda),
     fecha_inicio: normalizeDate(record.fecha_inicio),
     fecha_fin: normalizeDate(record.fecha_fin),
@@ -337,6 +347,7 @@ export function mapExtractionToCoverageRows(
   contract: {
     contratoId: string;
     valorContrato: unknown;
+    baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
     fechaFin: unknown;
   },
@@ -349,6 +360,7 @@ function mapExtractionToCoverageMapping(
   contract: {
     contratoId: string;
     valorContrato: unknown;
+    baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
     fechaFin: unknown;
   },
@@ -359,6 +371,8 @@ function mapExtractionToCoverageMapping(
   );
   const contractContext = {
     valorContrato: normalizeNumber(contract.valorContrato),
+    baseCalculoAmparos: normalizeNumber(contract.baseCalculoAmparos) ??
+      normalizeNumber(contract.valorContrato),
     fechaInicio: normalizeDate(contract.fechaInicio),
     fechaFin: normalizeDate(contract.fechaFin),
   };
@@ -417,6 +431,7 @@ function mapExtractionToCoverageMapping(
 
     const normalized = normalizeCoverage(normalizedInput, {
       valorContrato: contractContext.valorContrato,
+      baseCalculoAmparos: contractContext.baseCalculoAmparos,
       fechaInicio: contractContext.fechaInicio,
       fechaFin: contractContext.fechaFin,
     });
@@ -489,6 +504,16 @@ function validateContractUpdatePayload(update: ContractUpdate): {
     tipo_contrato: tipoContrato,
     valor_contrato: normalizeNullableNumberField(
       "valor_contrato",
+      update,
+      report,
+    ),
+    base_calculo_amparos: normalizeNullableNumberField(
+      "base_calculo_amparos",
+      update,
+      report,
+    ),
+    base_calculo_incluye_iva: normalizeNullableBooleanField(
+      "base_calculo_incluye_iva",
       update,
       report,
     ),
@@ -579,6 +604,268 @@ function getCriticalMissingFields(extraction: AIExtraction) {
   }
 
   return missing;
+}
+
+function applyDeterministicDateFallbacksToResult(
+  result: OpenAIExtractionResult,
+  extractedText: string,
+): OpenAIExtractionResult {
+  return {
+    ...result,
+    extraction: applyDeterministicDateFallbacks(result.extraction, extractedText),
+  };
+}
+
+function applyDeterministicDateFallbacks(
+  extraction: AIExtraction,
+  extractedText: string,
+): AIExtraction {
+  const candidate = findContractDurationDateCandidate(extractedText);
+
+  if (!candidate) {
+    return extraction;
+  }
+
+  const next: AIExtraction = {
+    ...extraction,
+    fecha_inicio: { ...extraction.fecha_inicio },
+    fecha_fin: { ...extraction.fecha_fin },
+    alertas: [...extraction.alertas],
+    campos_no_encontrados: [...extraction.campos_no_encontrados],
+  };
+  const currentStart = normalizeDate(next.fecha_inicio.valor);
+  const startDate = currentStart ?? candidate.startDate;
+
+  if (!currentStart && candidate.startDate) {
+    next.fecha_inicio = {
+      valor: candidate.startDate,
+      confianza: "media",
+      pagina: candidate.pageNumber,
+      fuente: candidate.source,
+    };
+    next.alertas.push(
+      "fecha_inicio derivada determinísticamente desde cláusula de duración/suscripción.",
+    );
+  }
+
+  if (!normalizeDate(next.fecha_fin.valor) && startDate && candidate.duration) {
+    const derivedEndDate = addDuration(startDate, candidate.duration);
+
+    if (derivedEndDate) {
+      next.fecha_fin = {
+        valor: derivedEndDate,
+        confianza: "media",
+        pagina: candidate.pageNumber,
+        fuente: candidate.source,
+      };
+      next.alertas.push(
+        "fecha_fin derivada determinísticamente desde fecha de inicio y plazo contractual.",
+      );
+    }
+  }
+
+  next.campos_no_encontrados = next.campos_no_encontrados.filter((field) => {
+    const normalized = normalizeText(field);
+
+    if (next.fecha_inicio.valor && normalized === "fecha_inicio") {
+      return false;
+    }
+
+    if (next.fecha_fin.valor && normalized === "fecha_fin") {
+      return false;
+    }
+
+    return true;
+  });
+
+  return next;
+}
+
+function findContractDurationDateCandidate(text: string) {
+  const pagePattern = /--- Página (\d+) ---\n([\s\S]*?)(?=\n\n--- Página \d+ ---|$)/g;
+  const pages = Array.from(text.matchAll(pagePattern));
+
+  for (const match of pages) {
+    const pageNumber = Number(match[1]);
+    const pageText = match[2] ?? "";
+    const normalized = normalizeForDateSearch(pageText);
+
+    if (!containsDurationDateSignal(normalized)) {
+      continue;
+    }
+
+    const startDate = extractFirstSpanishDate(pageText);
+    const duration = extractDuration(pageText);
+
+    if (startDate || duration) {
+      return {
+        pageNumber: Number.isFinite(pageNumber) ? pageNumber : null,
+        startDate,
+        duration,
+        source: extractRelevantDateSentence(pageText),
+      };
+    }
+  }
+
+  return null;
+}
+
+function containsDurationDateSignal(text: string) {
+  return (
+    (text.includes("duracion") ||
+      text.includes("plazo") ||
+      text.includes("vigencia")) &&
+    (text.includes("a partir de") ||
+      text.includes("contado a partir") ||
+      text.includes("contados a partir") ||
+      text.includes("suscripcion") ||
+      text.includes("acta de inicio"))
+  );
+}
+
+function extractFirstSpanishDate(text: string) {
+  const writtenDate = text.match(
+    /\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+(\d{4})\b/i,
+  );
+
+  if (writtenDate) {
+    return toIsoDate(
+      Number(writtenDate[1]),
+      getSpanishMonthNumber(writtenDate[2]),
+      Number(writtenDate[3]),
+    );
+  }
+
+  const numericDate = text.match(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/);
+
+  if (numericDate) {
+    return toIsoDate(
+      Number(numericDate[1]),
+      Number(numericDate[2]),
+      Number(numericDate[3]),
+    );
+  }
+
+  return null;
+}
+
+function extractDuration(text: string) {
+  const normalized = normalizeForDateSearch(text);
+  const parenthesized = normalized.match(
+    /\((\d+)\)\s*(anos?|mes(?:es)?|dias?)/,
+  );
+
+  if (parenthesized) {
+    return durationFromMatch(Number(parenthesized[1]), parenthesized[2]);
+  }
+
+  const numeric = normalized.match(/\b(\d+)\s*(anos?|mes(?:es)?|dias?)\b/);
+
+  if (numeric) {
+    return durationFromMatch(Number(numeric[1]), numeric[2]);
+  }
+
+  if (/\bun ano\b/.test(normalized)) {
+    return { years: 1, months: 0, days: 0 };
+  }
+
+  if (/\bdoce meses\b/.test(normalized)) {
+    return { years: 0, months: 12, days: 0 };
+  }
+
+  return null;
+}
+
+function durationFromMatch(value: number, unit: string) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  if (unit.startsWith("ano")) {
+    return { years: value, months: 0, days: 0 };
+  }
+
+  if (unit.startsWith("mes")) {
+    return { years: 0, months: value, days: 0 };
+  }
+
+  return { years: 0, months: 0, days: value };
+}
+
+function addDuration(
+  date: string,
+  duration: { years: number; months: number; days: number },
+) {
+  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+
+  if (!Number.isFinite(parsedDate.getTime())) {
+    return null;
+  }
+
+  parsedDate.setUTCFullYear(parsedDate.getUTCFullYear() + duration.years);
+  parsedDate.setUTCMonth(parsedDate.getUTCMonth() + duration.months);
+  parsedDate.setUTCDate(parsedDate.getUTCDate() + duration.days);
+
+  return parsedDate.toISOString().slice(0, 10);
+}
+
+function getSpanishMonthNumber(month: string) {
+  const months: Record<string, number> = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    setiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+  };
+
+  return months[month.toLowerCase()] ?? null;
+}
+
+function toIsoDate(day: number, month: number | null, year: number) {
+  if (!month || !Number.isFinite(day) || !Number.isFinite(year)) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function extractRelevantDateSentence(text: string) {
+  const sentences = text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?;:])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const selected =
+    sentences.find((sentence) =>
+      containsDurationDateSignal(normalizeForDateSearch(sentence)),
+    ) ?? sentences[0] ?? text.slice(0, 600);
+
+  return selected.slice(0, 900);
+}
+
+function normalizeForDateSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function hasUsefulCoverageEvidence(
@@ -885,6 +1172,24 @@ function normalizeNullableDateField(
   return normalized;
 }
 
+function normalizeNullableBooleanField(
+  field: keyof ContractUpdate,
+  update: ContractUpdate,
+  report: NormalizationReport,
+) {
+  const original = update[field];
+
+  if (original === null || typeof original === "undefined") {
+    trackNormalization(field, original, null, report);
+    return null;
+  }
+
+  const normalized = normalizeBoolean(original, false);
+
+  trackNormalization(field, original, normalized, report);
+  return normalized;
+}
+
 function normalizeRequiredCurrencyField(
   value: unknown,
   report: NormalizationReport,
@@ -898,6 +1203,32 @@ function normalizeRequiredCurrencyField(
   }
 
   return normalized;
+}
+
+function inferBaseIncludesIva(value: unknown) {
+  const normalized = (normalizeText(value) ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.includes("incluido iva") ||
+    normalized.includes("iva incluido") ||
+    normalized.includes("incluye iva") ||
+    normalized.includes("incluido el iva")
+  ) {
+    return true;
+  }
+
+  if (normalized.includes("sin iva") || normalized.includes("no incluye iva")) {
+    return false;
+  }
+
+  return null;
 }
 
 function normalizeRequiredBooleanField(
