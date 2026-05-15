@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f6f6f4;
-  --foreground: #171717;
+  --background: #f6f7f8;
+  --foreground: #111111;
+  --afisec-orange: #f58220;
+  --afisec-teal: #008c7a;
   --app-font-sans: "Inter", "Segoe UI", Arial, sans-serif;
   --app-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -29,6 +31,6 @@ textarea {
 }
 
 ::selection {
-  background: #ccfbf1;
-  color: #134e4a;
+  background: #fde7d2;
+  color: #111111;
 }

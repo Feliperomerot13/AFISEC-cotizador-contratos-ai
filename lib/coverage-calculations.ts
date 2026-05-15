@@ -432,6 +432,14 @@ function resolveAdvanceCalculationBase(
     }
 
     if (
+      confirmedCoverageBase !== null &&
+      contractValue !== null &&
+      confirmedCoverageBase < contractValue
+    ) {
+      return confirmedCoverageBase;
+    }
+
+    if (
       confirmedContractBase !== null &&
       contractValue !== null &&
       confirmedContractBase < contractValue
@@ -632,15 +640,31 @@ function buildCivilLiabilitySubcoverages(
     const key = getCivilLiabilitySubcoverageKey(subamparo.nombre);
     const current = byKey.get(key);
     const isPlo = key === "plo";
+    const percentage = isPlo
+      ? 1
+      : normalizeSubcoveragePercent(
+          subamparo.porcentaje_sublimite ??
+            current?.porcentaje_sublimite ??
+            null,
+        );
+    const valueFromPercentage =
+      !isPlo && percentage !== null && insuredValue !== null
+        ? roundMoney(insuredValue * percentage)
+        : null;
 
     byKey.set(key, {
-      nombre: current?.nombre ?? subamparo.nombre,
+      nombre:
+        current?.nombre ??
+        getCanonicalCivilLiabilitySubcoverageName(subamparo.nombre),
       incluido: subamparo.incluido,
-      porcentaje_sublimite: isPlo
-        ? 1
-        : subamparo.porcentaje_sublimite ?? current?.porcentaje_sublimite ?? null,
+      porcentaje_sublimite: percentage,
       valor_sublimite:
-        subamparo.valor_sublimite ?? current?.valor_sublimite ?? null,
+        isPlo
+          ? insuredValue
+          : valueFromPercentage ??
+            subamparo.valor_sublimite ??
+            current?.valor_sublimite ??
+            null,
       origen: isPlo ? "contrato" : subamparo.origen,
       calculable: isPlo,
       requiere_revision: subamparo.requiere_revision,
@@ -650,6 +674,37 @@ function buildCivilLiabilitySubcoverages(
   });
 
   return Array.from(byKey.values());
+}
+
+function normalizeSubcoveragePercent(value: number | null | undefined) {
+  const normalized = normalizeNumber(value);
+
+  if (normalized === null) {
+    return null;
+  }
+
+  if (normalized > 1 && normalized <= 100) {
+    return normalized / 100;
+  }
+
+  return normalized;
+}
+
+function getCanonicalCivilLiabilitySubcoverageName(name: string) {
+  const key = getCivilLiabilitySubcoverageKey(name);
+  const names: Record<string, string> = {
+    plo: "PLO",
+    contratistas_subcontratistas: "Contratistas y subcontratistas",
+    rc_patronal: "RC Patronal",
+    rc_cruzada: "RC Cruzada",
+    vehiculos_propios_no_propios: "Vehículos propios y no propios",
+    gastos_medicos: "Gastos médicos",
+    contaminacion_ambiental: "Responsabilidad por contaminación ambiental",
+    dano_emergente_lucro_cesante: "Daño emergente y lucro cesante",
+    perjuicios_extrapatrimoniales: "Perjuicios extrapatrimoniales",
+  };
+
+  return names[key] ?? name;
 }
 
 function getDefaultCivilLiabilitySubcoverageNames(source: string | null) {

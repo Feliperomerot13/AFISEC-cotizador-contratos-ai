@@ -13,7 +13,7 @@ type DashboardStats = {
 
 const statStyles = [
   "border-neutral-200 bg-white",
-  "border-amber-200 bg-amber-50",
+  "border-orange-200 bg-orange-50",
   "border-rose-200 bg-rose-50",
   "border-teal-200 bg-teal-50",
 ];
@@ -62,20 +62,24 @@ export function DashboardClient() {
     <div className="space-y-8">
       <section className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
         <div className="rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#008C7A]">
             AFISEC
           </p>
           <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-neutral-950">
-            Muñeco Digital
+            AFISEC | Gestión de cotizaciones contractuales
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-neutral-600">
-            Prelectura asistida por IA para contratos: carga un PDF, revisa la
-            extracción y confirma datos estructurados antes de guardarlos.
+            Prelectura asistida de contratos para cotización de garantías.
+          </p>
+          <p className="mt-3 max-w-2xl text-base leading-7 text-neutral-600">
+            Carga contratos en PDF, revisa la información extraída, valida los
+            amparos y prepara la información necesaria para cotizar con mayor
+            trazabilidad.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
               href="/upload"
-              className="inline-flex h-11 items-center justify-center rounded-lg bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+              className="inline-flex h-11 items-center justify-center rounded-lg bg-[#F58220] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#d96f19]"
             >
               Cargar contrato
             </Link>
@@ -88,15 +92,17 @@ export function DashboardClient() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-neutral-200 bg-neutral-950 p-8 text-white shadow-sm">
-          <p className="text-sm font-medium text-teal-200">MVP operativo</p>
+        <div className="rounded-lg border border-neutral-200 bg-[#111111] p-8 text-white shadow-sm">
+          <p className="text-sm font-medium text-orange-200">
+            Flujo de revisión comercial
+          </p>
           <p className="mt-4 text-2xl font-semibold leading-tight">
-            Diana y Carolina validan la lectura antes de que un contrato pase a
-            estado validado.
+            El equipo comercial valida la lectura antes de generar la
+            cotización.
           </p>
           <p className="mt-4 text-sm leading-6 text-neutral-300">
-            La aplicación no emite pólizas ni calcula primas; concentra el flujo
-            en extracción, revisión humana y consulta posterior.
+            La información queda organizada para revisar datos contractuales,
+            amparos, vigencias y primas con evidencia trazable.
           </p>
         </div>
       </section>

@@ -757,12 +757,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       )}
                     />
                     <ReadOnlyMetric
-                      label={getCoverageBaseLabel(calculation, form)}
+                      label={getCoverageBaseLabel(calculation)}
                       value={formatCurrency(
                         getCoverageBaseDisplayValue(calculation),
                         form.moneda || "COP",
                       )}
                     />
+                    {isAdvanceCoverage ? (
+                      <ReadOnlyMetric
+                        label="Criterio base"
+                        value={getAdvanceBaseCriterion(calculation, form)}
+                      />
+                    ) : null}
                     <ReadOnlyMetric
                       label="Modo cálculo"
                       value={calculation.modo_calculo ?? "Sin dato"}
@@ -1591,26 +1597,9 @@ function getCalculationBase(contract: ContractForm) {
     numberOrNull(contract.valor_contrato);
 }
 
-function getCoverageBaseLabel(
-  calculation: ReturnType<typeof calculateEditableAmparo>,
-  contract: ContractForm,
-) {
+function getCoverageBaseLabel(calculation: ReturnType<typeof calculateEditableAmparo>) {
   if (calculation.modo_calculo === "anticipo_100") {
-    const contractValue = numberOrNull(contract.valor_contrato);
-
-    if (
-      calculation.valor_base_calculo !== null &&
-      contractValue !== null &&
-      calculation.valor_base_calculo < contractValue
-    ) {
-      return "Base anticipo sin IVA";
-    }
-
-    if (contract.base_calculo_incluye_iva === "si") {
-      return "Base anticipo con IVA";
-    }
-
-    return "Base anticipo";
+    return "Base anticipo usada";
   }
 
   if (
@@ -1642,6 +1631,27 @@ function getCoverageBaseDisplayValue(
   }
 
   return calculation.valor_base_calculo;
+}
+
+function getAdvanceBaseCriterion(
+  calculation: ReturnType<typeof calculateEditableAmparo>,
+  contract: ContractForm,
+) {
+  const contractValue = numberOrNull(contract.valor_contrato);
+
+  if (
+    calculation.valor_base_calculo !== null &&
+    contractValue !== null &&
+    calculation.valor_base_calculo < contractValue
+  ) {
+    return "Sin IVA";
+  }
+
+  if (contract.base_calculo_incluye_iva === "si") {
+    return "Con IVA";
+  }
+
+  return "No determinado";
 }
 
 function formatRatePercent(value: number | null | undefined) {
@@ -1802,7 +1812,7 @@ function formatInputNumber(value: number | null | undefined) {
   }
 
   return new Intl.NumberFormat("es-CO", {
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
     minimumFractionDigits: 0,
     useGrouping: true,
   }).format(value);

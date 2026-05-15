@@ -3,8 +3,8 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Muñeco Digital | AFISEC",
-  description: "Prelectura inteligente de contratos para AFISEC.",
+  title: "AFISEC | Gestión de cotizaciones contractuales",
+  description: "Prelectura asistida de contratos para cotización de garantías.",
 };
 
 export default function RootLayout({
@@ -18,15 +18,15 @@ export default function RootLayout({
         <header className="border-b border-neutral-200 bg-white">
           <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
             <Link href="/" className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-700 text-sm font-bold text-white">
-                MD
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F58220] text-sm font-bold text-white">
+                AF
               </span>
               <span>
                 <span className="block text-sm font-semibold uppercase tracking-[0.18em] text-neutral-500">
                   AFISEC
                 </span>
                 <span className="block text-lg font-semibold text-neutral-950">
-                  Muñeco Digital
+                  Gestión de cotizaciones
                 </span>
               </span>
             </Link>
