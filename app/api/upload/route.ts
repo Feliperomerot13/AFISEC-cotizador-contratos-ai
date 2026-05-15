@@ -15,6 +15,7 @@ export async function POST(request: Request) {
       nitCliente: formData.get("nitCliente"),
       ejecutivo: formData.get("ejecutivo"),
       tipoDocumento: formData.get("tipoDocumento"),
+      contratoBaseId: valueOrUndefined(formData.get("contratoBaseId")),
     });
     const pdf = formData.get("pdf");
 
@@ -30,6 +31,80 @@ export async function POST(request: Request) {
     }
 
     const supabase = getSupabaseAdmin();
+
+    if (input.tipoDocumento === "otrosi") {
+      if (!input.contratoBaseId) {
+        return jsonError("Debes seleccionar el contrato base del otrosí.", 400);
+      }
+
+      const { data: baseContract, error: baseContractError } = await supabase
+        .from("contratos")
+        .select("id,cliente_id,clientes!inner(id,nombre,nit,ejecutivo)")
+        .eq("id", input.contratoBaseId)
+        .single();
+
+      if (baseContractError || !baseContract) {
+        throw new Error(
+          `No se encontró el contrato base: ${baseContractError?.message ?? "sin detalle"}`,
+        );
+      }
+
+      const baseContractRecord = baseContract as unknown as {
+        id: string;
+        clientes:
+          | { id: string; nombre: string; nit: string; ejecutivo: string }
+          | Array<{ id: string; nombre: string; nit: string; ejecutivo: string }>;
+      };
+      const cliente = Array.isArray(baseContractRecord.clientes)
+        ? baseContractRecord.clientes[0]
+        : baseContractRecord.clientes;
+      const storagePath = [
+        cliente.id,
+        baseContractRecord.id,
+        "otrosies",
+        `${Date.now()}-${safeFileName(pdf.name)}`,
+      ].join("/");
+      const bytes = Buffer.from(await pdf.arrayBuffer());
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, bytes, {
+          contentType: pdf.type || "application/pdf",
+          upsert: false,
+        });
+
+      if (uploadError) {
+        throw new Error(
+          `Fallo al subir el PDF a Supabase Storage: ${uploadError.message}`,
+        );
+      }
+
+      const { data: document, error: documentError } = await supabase
+        .from("documentos")
+        .insert({
+          contrato_id: baseContractRecord.id,
+          nombre_archivo: pdf.name,
+          storage_bucket: STORAGE_BUCKET,
+          storage_path: storagePath,
+          mime_type: pdf.type || "application/pdf",
+          size_bytes: pdf.size,
+          tipo_documento: "otrosi",
+        })
+        .select("id")
+        .single();
+
+      if (documentError || !document) {
+        throw new Error(
+          `Fallo al registrar el documento: ${documentError?.message ?? "sin detalle"}`,
+        );
+      }
+
+      return jsonOk({
+        contractId: baseContractRecord.id,
+        documentId: document.id,
+        status: "cargado",
+      });
+    }
+
     const cliente = await createOrReuseClient({
       nombre: input.nombreCliente,
       nit: input.nitCliente,
@@ -182,4 +257,8 @@ function safeFileName(fileName: string) {
     .replace(/(^-|-$)/g, "");
 
   return normalized || "contrato.pdf";
+}
+
+function valueOrUndefined(value: FormDataEntryValue | null) {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

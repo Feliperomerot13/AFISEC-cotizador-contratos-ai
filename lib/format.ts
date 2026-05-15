@@ -1,16 +1,22 @@
 import type { ContractState } from "@/lib/constants";
+import { formatDateOnly } from "@/lib/date-only";
 import { normalizeDate } from "@/lib/normalizers";
 
 export function formatCurrency(value: number | null | undefined, currency = "COP") {
+  void currency;
+
   if (value === null || typeof value === "undefined") {
     return "Sin valor";
   }
 
   const roundedValue = Math.round(Number(value));
 
+  if (!Number.isFinite(roundedValue)) {
+    return "Sin valor";
+  }
+
   return new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency,
+    style: "decimal",
     maximumFractionDigits: 0,
     minimumFractionDigits: 0,
   }).format(roundedValue);
@@ -23,15 +29,7 @@ export function formatDate(value: unknown) {
     return "No registrada";
   }
 
-  try {
-    return new Intl.DateTimeFormat("es-CO", {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-    }).format(new Date(`${normalizedDate}T00:00:00.000Z`));
-  } catch {
-    return "No registrada";
-  }
+  return formatDateOnly(normalizedDate);
 }
 
 export function stateLabel(state: string) {

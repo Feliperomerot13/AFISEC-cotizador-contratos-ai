@@ -19,6 +19,8 @@ export const EXPIRATION_WINDOW_DAYS = 30;
 
 export const DEFAULT_IVA_PERCENTAGE = 0.19;
 
+export const DEFAULT_COVERAGE_RATE = 0.002;
+
 export const DEFAULT_RCE_RATE = 0.0025;
 
 export type Executive = (typeof EXECUTIVES)[number];

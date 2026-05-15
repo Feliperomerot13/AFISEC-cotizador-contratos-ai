@@ -215,7 +215,13 @@ La UI no muestra la tabla de `tasas_referencia`. Esa tabla queda como fuente int
 
 Responsabilidad Civil Extracontractual se modela como un solo amparo principal. La prima se calcula únicamente sobre la línea calculable PLO y la cuantía principal de la póliza. Los demás elementos exigidos por el contrato, como contratistas/subcontratistas, RC patronal, RC cruzada y vehículos propios/no propios, se guardan en `amparos.subamparos` como coberturas informativas. Cuando un sublímite proviene de la plantilla AFISEC y no del texto contractual, queda con `origen = regla_plantilla_afisec` y `requiere_revision = true`.
 
+Los subamparos de Responsabilidad Civil son configurables en la pantalla de validación. La comercial puede incluirlos o excluirlos y editar porcentaje o valor de sublímite. `calculable = true` queda reservado para PLO; los demás subamparos son informativos y no generan prima individual. Si el contrato define una regla como 30% del PLO, el backend calcula el sublímite y marca `origen = contrato`.
+
+El amparo `buen_manejo_anticipo` se calcula sobre el anticipo, no sobre el valor total del contrato. Si el documento indica porcentaje de anticipo y base sin IVA, el backend usa el valor sin IVA cuando está disponible o deriva base sin IVA desde valor total / 1.19. Si falta confirmar la base de IVA o falta valor/porcentaje del anticipo, el amparo queda en revisión humana.
+
 Para otrosíes y prórrogas, se propone la tabla `modificaciones_contractuales` y la relación opcional `amparos.modificacion_id`. Las migraciones propuestas están en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql` y `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql`; no automatizan todavía la gestión de otrosíes en UI.
+
+La carga de documentos tipo `otrosi` ya no crea un contrato aislado: el usuario selecciona cliente y contrato base, el PDF se registra en `documentos` contra ese contrato y el procesamiento inserta una fila en `modificaciones_contractuales`. Si el otrosí trae nuevos amparos o ajustes, se insertan con `amparos.modificacion_id` para mantener trazabilidad. La vista histórica consolidada tipo Excel queda como trabajo posterior.
 
 ## Validación del JSON de IA
 

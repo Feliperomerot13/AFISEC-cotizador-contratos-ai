@@ -8,7 +8,12 @@ import { AzureOpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
 import { getServerEnv } from "@/lib/env";
-import { aiExtractionSchema, type AIExtraction } from "@/lib/schemas";
+import {
+  aiExtractionSchema,
+  amendmentExtractionSchema,
+  type AIExtraction,
+  type AmendmentExtraction,
+} from "@/lib/schemas";
 
 export type ExtractedPage = {
   pageNumber: number;
@@ -37,6 +42,14 @@ const EXTRACTION_KEYWORDS: Array<{ label: string; weight: number }> = [
   { label: "PRESUPUESTO MENSUAL", weight: 35 },
   { label: "PROCEDIMIENTO DE PAGO", weight: 30 },
   { label: "FORMA DE PAGO", weight: 30 },
+  { label: "ANTICIPO", weight: 50 },
+  { label: "PAGO ANTICIPADO", weight: 45 },
+  { label: "BUEN MANEJO", weight: 50 },
+  { label: "CORRECTA INVERSION", weight: 50 },
+  { label: "AMORTIZACION DEL ANTICIPO", weight: 50 },
+  { label: "SIN INCLUIR IVA", weight: 45 },
+  { label: "ANTES DE IVA", weight: 40 },
+  { label: "SUBTOTAL", weight: 35 },
   { label: "PRECIO", weight: 20 },
   { label: "REMUNERACION", weight: 20 },
   { label: "DURACION", weight: 35 },
@@ -85,6 +98,9 @@ const CONTINUATION_KEYWORDS = new Set([
   "VALOR",
   "VALOR Y FORMA DE PAGO",
   "VALOR TOTAL",
+  "ANTICIPO",
+  "BUEN MANEJO",
+  "CORRECTA INVERSION",
   "DURACION",
   "PLAZO",
   "CONTADO A PARTIR",
@@ -109,6 +125,17 @@ const MAX_EXTRACTION_CONTEXT_CHARS = 120_000;
 export type OpenAIExtractionResult = {
   deployment: string;
   extraction: AIExtraction;
+  rawJson: unknown;
+  rawContent: string;
+  usage: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+  };
+};
+
+export type OpenAIAmendmentExtractionResult = {
+  deployment: string;
+  extraction: AmendmentExtraction;
   rawJson: unknown;
   rawContent: string;
   usage: {
@@ -420,10 +447,14 @@ function buildExtractionPrompt(extractedText: string, retrying: boolean) {
     "Para valor_contrato usa el valor total del contrato. Si aparecen presupuesto mensual, IVA, valor mensual y valor total, extrae el valor total final e incluye el fragmento fuente.",
     "Para fechas del contrato, extrae fecha_inicio y fecha_fin si son explicitas o si se derivan sin ambiguedad de una fecha base y un plazo contractual. Si la derivacion es ambigua, usa null, conserva plazo y agrega alerta.",
     "Si el texto dice 'un año contado a partir de la suscripcion del 02 de febrero de 2024', extrae fecha_inicio 2024-02-02, plazo 'un año contado a partir de la suscripcion' y fecha_fin derivada. Agrega alerta indicando que fecha_fin fue derivada si no aparece literal.",
+    "Si el plazo dice que corre desde Acta de Inicio y no aparece la fecha real del acta, no uses la fecha de firma como fecha_inicio. Deja fecha_inicio y fecha_fin en null, conserva el plazo en dias si aparece, por ejemplo '240 dias contados a partir del Acta de Inicio', y agrega alerta indicando que se debe ingresar la fecha de inicio manualmente.",
     "Busca expresiones equivalentes: fecha de suscripcion, suscripcion del contrato, acta de inicio, contados a partir de, a partir de la suscripcion, a partir del acta de inicio, fecha de terminacion y vigencia.",
     "Para plazo, conserva la frase contractual, por ejemplo 'un año contado a partir de la suscripcion'.",
     "Busca especificamente clausulas de valor, forma de pago, duracion, plazo, vigencia, garantias, garantia unica, polizas y amparos.",
     "En amparos extrae cada garantia real con evidencia textual: cumplimiento, salarios y prestaciones sociales, calidad del servicio, responsabilidad civil, accidentes personales, gastos medicos, auxilio funerario, equipos y maquinaria u otras que aparezcan.",
+    "Si aparece buen manejo de anticipo, buen manejo y correcta inversion del anticipo, amortizacion del anticipo o expresiones equivalentes, usa tipo_amparo buen_manejo_anticipo. Para ese amparo, conserva en fuente_texto la clausula de anticipo y la clausula de garantia cuando sea posible.",
+    "Para anticipo busca porcentaje o valor del anticipo, si la base es sin IVA o incluido IVA, subtotal, valor antes de IVA y valor estimado. No calcules valor asegurado final; extrae la evidencia completa para que el backend calcule.",
+    "Para Responsabilidad Civil Extracontractual, conserva subamparos en subamparos cuando el contrato liste coberturas adicionales. Si el contrato dice que cada subamparo tiene un porcentaje del PLO, guarda porcentaje_sublimite decimal, origen contrato y calculable false para esos subamparos informativos.",
     "Si un amparo tiene porcentaje, entrega porcentaje decimal: 0.30 significa 30% y 0.10 significa 10%.",
     "Si un amparo tiene cuantia fija explicita, entrega esa cuantia en cuantia_fija. Si es por empleado, por persona o por evento, conserva esa condicion en fuente_texto y agrega alerta.",
     "Si una vigencia dice plazo + 30 dias, usa tipo_vigencia post_contractual, base_vigencia fecha_fin_contrato y dias_adicionales 30.",
@@ -474,9 +505,12 @@ export async function extractStructuredContract(
             "Debes extraer datos estrictamente desde el texto entregado.",
             "Nunca inventes fechas, valores, NIT, porcentajes, partes o vigencias.",
             "Si un dato no aparece de forma explícita, usa null y agrega una alerta cuando sea importante, excepto fechas del contrato derivables sin ambiguedad desde fecha base y plazo contractual.",
+            "Si el plazo depende del Acta de Inicio y no hay fecha real del acta, no uses la fecha de firma como fecha_inicio; conserva el plazo en dias y deja fecha_inicio/fecha_fin en null.",
             "Los porcentajes deben entregarse como decimal: 0.30 significa 30%.",
             "Para amparos, no calcules valor asegurado, fecha desde ni fecha hasta finales. Extrae únicamente reglas, datos explícitos y evidencia textual.",
             "Para garantias, extrae tipo_amparo, porcentaje, cuantia_fija, tipo_vigencia, base_vigencia, dias_adicionales, fechas explícitas si aparecen, fuente_texto, fuente_pagina y confianza.",
+            "Para responsabilidad civil, si hay subamparos adicionales, extraelos dentro de subamparos. Solo PLO puede ser calculable=true; los demas subamparos deben ser calculable=false.",
+            "Para buen manejo de anticipo, usa tipo_amparo buen_manejo_anticipo y conserva evidencia de anticipo, IVA y garantia en fuente_texto.",
             "base_vigencia solo puede ser fecha_inicio_contrato, fecha_fin_contrato, acta_recibo_final, firma_contrato, otra o null.",
             "valor_asegurado debe ser null salvo que el contrato lo indique explícitamente como cuantía; nunca lo calcules desde porcentaje por valor del contrato.",
             "La fuente debe ser una cita textual legible tomada del contrato, idealmente la frase o cláusula completa relevante, y la pagina debe corresponder a esa cita.",
@@ -521,6 +555,87 @@ export async function extractStructuredContract(
 
   throw new InvalidAIJsonError(
     `Azure OpenAI devolvió JSON inválido: ${lastValidationError ?? "sin detalle"}`,
+    lastRawContent,
+  );
+}
+
+function buildAmendmentExtractionPrompt(extractedText: string, retrying: boolean) {
+  const retryInstruction = retrying
+    ? "La respuesta anterior no cumplió el esquema. Corrige el JSON y respeta exactamente la estructura solicitada."
+    : "Devuelve solamente JSON valido que cumpla el esquema.";
+
+  return [
+    retryInstruction,
+    "Analiza este documento como otrosí o modificación contractual de un contrato base existente.",
+    "Extrae numero_modificacion, tipo_modificacion, contrato afectado, valor de adicion, valor acumulado del contrato, prorroga, nueva fecha de terminacion y cualquier modificacion a garantias o amparos.",
+    "Busca expresiones como otrosi, modificacion, adicion, prorroga, plazo, nueva fecha de terminacion, valor acumulado, anticipo, garantias, polizas y amparos.",
+    "Si el otrosí modifica garantias o crea amparos, extraelos en garantias usando las mismas reglas del contrato base. No inventes datos faltantes.",
+    "Si no encuentras un campo, usa null y agrega una alerta cuando sea importante.",
+    "Texto extraido por pagina:",
+    extractedText,
+  ].join("\n\n");
+}
+
+export async function extractStructuredAmendment(
+  deployment: string,
+  extractedText: string,
+) {
+  let lastRawContent: string | null = null;
+  let lastValidationError: string | null = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const completion = await getAzureOpenAIClient(deployment).chat.completions.create({
+      model: deployment,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Eres un analista experto en contratos colombianos y otrosíes para una corredora de seguros.",
+            "Debes extraer datos estrictamente desde el texto entregado.",
+            "Nunca inventes fechas, valores, porcentajes, partes, prórrogas o amparos.",
+            "Para modificaciones, conserva trazabilidad con fuente textual y página.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: buildAmendmentExtractionPrompt(extractedText, attempt > 1),
+        },
+      ],
+      response_format: zodResponseFormat(
+        amendmentExtractionSchema,
+        "muneco_digital_amendment_extraction",
+      ),
+    });
+
+    lastRawContent = completion.choices[0]?.message.content ?? "";
+
+    try {
+      const rawJson = JSON.parse(lastRawContent);
+      const extraction = amendmentExtractionSchema.parse(rawJson);
+
+      return {
+        deployment,
+        extraction,
+        rawJson,
+        rawContent: lastRawContent,
+        usage: {
+          promptTokens: completion.usage?.prompt_tokens ?? null,
+          completionTokens: completion.usage?.completion_tokens ?? null,
+        },
+      } satisfies OpenAIAmendmentExtractionResult;
+    } catch (error) {
+      lastValidationError =
+        error instanceof ZodError
+          ? error.issues.map((issue) => issue.message).join("; ")
+          : error instanceof Error
+            ? error.message
+            : "JSON inválido.";
+    }
+  }
+
+  throw new InvalidAIJsonError(
+    `Azure OpenAI devolvió JSON de otrosí inválido: ${lastValidationError ?? "sin detalle"}`,
     lastRawContent,
   );
 }

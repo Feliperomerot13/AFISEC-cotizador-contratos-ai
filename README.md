@@ -132,3 +132,9 @@ npm run build
 ## Liquidación de responsabilidad civil
 
 Responsabilidad Civil Extracontractual se guarda como un solo amparo principal. PLO queda como `subamparo` calculable y los demás subamparos del bloque se conservan como detalle informativo, sin prima individual. La migración propuesta agrega `amparos.subamparos` en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql`.
+
+Los subamparos de RCE son editables en la validación: se pueden incluir/excluir y ajustar porcentaje o valor de sublímite. Si el contrato define una regla como 30% del PLO, se guarda como dato contractual; si viene de plantilla AFISEC, queda marcado para revisión.
+
+Los documentos tipo `otrosi` se cargan seleccionando el contrato base afectado. El documento queda asociado al contrato base y el procesamiento registra la modificación en `modificaciones_contractuales`; los amparos derivados del otrosí usan `amparos.modificacion_id`.
+
+El amparo `buen_manejo_anticipo` se calcula sobre el valor del anticipo. Si el anticipo es porcentaje sin IVA, el backend usa valor sin IVA o deriva base sin IVA con IVA 19%; si falta evidencia, queda para revisión humana.

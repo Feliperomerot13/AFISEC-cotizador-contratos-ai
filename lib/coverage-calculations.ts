@@ -1,4 +1,12 @@
-import { DEFAULT_IVA_PERCENTAGE, DEFAULT_RCE_RATE } from "@/lib/constants";
+import {
+  DEFAULT_COVERAGE_RATE,
+  DEFAULT_IVA_PERCENTAGE,
+  DEFAULT_RCE_RATE,
+} from "@/lib/constants";
+import {
+  addDaysToDateOnly,
+  diffDaysDateOnly,
+} from "@/lib/date-only";
 import { normalizeDate, normalizeNumber, normalizeText } from "@/lib/normalizers";
 import type { AIConfidence, AIExtraction } from "@/lib/schemas";
 
@@ -14,6 +22,9 @@ export type CoverageInput = CoverageCalculationInput;
 export type ContractCoverageContext = {
   valorContrato: number | null;
   baseCalculoAmparos?: number | null;
+  valorAnticipo?: number | null;
+  porcentajeAnticipo?: number | null;
+  anticipoBaseIncluyeIva?: boolean | null;
   fechaInicio: string | null;
   fechaFin: string | null;
 };
@@ -23,12 +34,17 @@ export type CoverageCalculationInput = Partial<AIExtraction["garantias"][number]
   tasa?: number | null;
   tasa_manual?: boolean | null;
   iva_porcentaje?: number | null;
+  valor_base_calculo?: number | null;
   valor_asegurado?: number | null;
+  valor_anticipo?: number | null;
+  porcentaje_anticipo?: number | null;
+  anticipo_base_incluye_iva?: boolean | null;
   subamparos?: CoverageSubamparo[] | null;
 };
 
 export type CoverageSubamparo = {
   nombre: string;
+  incluido: boolean;
   porcentaje_sublimite: number | null;
   valor_sublimite: number | null;
   origen: "contrato" | "regla_plantilla_afisec";
@@ -78,6 +94,8 @@ export function normalizeCoverage(
   );
   const preparedCoverage = isRce
     ? normalizeCivilLiabilityInput(coverage)
+    : isAdvancePaymentCoverage(coverage)
+      ? normalizeAdvancePaymentCoverageInput(coverage, contract)
     : coverage;
   const valueCalculation = calculateInsuredValue(
     preparedCoverage,
@@ -116,7 +134,12 @@ export function normalizeCoverage(
   const ivaPercentage =
     normalizeNumber(preparedCoverage.iva_porcentaje) ?? DEFAULT_IVA_PERCENTAGE;
   const tasa =
-    normalizeNumber(preparedCoverage.tasa) ?? (isRce ? DEFAULT_RCE_RATE : null);
+    normalizeNumber(preparedCoverage.tasa) ??
+    (isRce
+      ? DEFAULT_RCE_RATE
+      : valueCalculation.valor_asegurado !== null
+        ? DEFAULT_COVERAGE_RATE
+        : null);
   const premium = calculatePremium({
     insuredValue: valueCalculation.valor_asegurado,
     rate: tasa,
@@ -130,13 +153,23 @@ export function normalizeCoverage(
 
   if (
     normalizeNumber(preparedCoverage.porcentaje) === null &&
-    normalizeNumber(preparedCoverage.cuantia_fija) === null
+    normalizeNumber(preparedCoverage.cuantia_fija) === null &&
+    !isAdvancePaymentCoverage(preparedCoverage)
   ) {
     reasons.add("Falta porcentaje o cuantía fija para calcular el amparo.");
   }
 
   if (isClosureBasedPostContractualCoverage(preparedCoverage)) {
     reasons.add("La vigencia depende del acta de recibo final.");
+  }
+
+  if (
+    isPayrollCoverage(preparedCoverage.tipo_amparo, preparedCoverage.fuente_texto) &&
+    coverageTextIncludes(preparedCoverage, ["acta de recibo final", "acta de cierre"])
+  ) {
+    reasons.add(
+      "La cláusula menciona ajuste con Acta de Recibo Final; se conserva fecha inicio del contrato para cotización y requiere revisión humana.",
+    );
   }
 
   if (hasPerUnitCondition(preparedCoverage.fuente_texto)) {
@@ -171,7 +204,7 @@ export function normalizeCoverage(
     tipo_amparo: isRce
       ? "responsabilidad_civil_extracontractual"
       : preparedCoverage.tipo_amparo,
-    porcentaje: preparedCoverage.porcentaje ?? null,
+    porcentaje: valueCalculation.porcentaje ?? preparedCoverage.porcentaje ?? null,
     cuantia_fija: preparedCoverage.cuantia_fija ?? null,
     valor_base_calculo: valueCalculation.valor_base_calculo,
     modo_calculo: valueCalculation.modo_calculo,
@@ -208,8 +241,75 @@ function calculateInsuredValue(
     normalizeNumber(contract.baseCalculoAmparos) ??
     normalizeNumber(contract.valorContrato);
 
+  if (isAdvancePaymentCoverage(coverage)) {
+    const advanceValue =
+      normalizeNumber(coverage.valor_anticipo) ??
+      normalizeNumber(coverage.valor_asegurado) ??
+      normalizeNumber(coverage.valor_base_calculo) ??
+      normalizeNumber(contract.valorAnticipo);
+    const advancePercentage = resolveAdvancePercentage(coverage, contract);
+    const inferredAdvanceBaseIncludesIva = inferAdvanceBaseIncludesIva(
+      coverage.fuente_texto,
+    );
+    let advanceBaseIncludesIva: boolean | null = null;
+
+    if (typeof coverage.anticipo_base_incluye_iva === "boolean") {
+      advanceBaseIncludesIva = coverage.anticipo_base_incluye_iva;
+    } else if (inferredAdvanceBaseIncludesIva !== null) {
+      advanceBaseIncludesIva = inferredAdvanceBaseIncludesIva;
+    } else if (typeof contract.anticipoBaseIncluyeIva === "boolean") {
+      advanceBaseIncludesIva = contract.anticipoBaseIncluyeIva;
+    }
+    const advanceCalculationBase = resolveAdvanceCalculationBase(
+      coverage,
+      contract,
+      advanceBaseIncludesIva,
+    );
+
+    if (advancePercentage !== null && advanceCalculationBase !== null) {
+      if (advanceBaseIncludesIva === null) {
+        reasons.add("Falta confirmar si la base del anticipo incluye IVA.");
+      }
+
+      const calculatedAdvance = roundMoney(
+        advanceCalculationBase * advancePercentage,
+      );
+
+      return {
+        porcentaje: advancePercentage,
+        valor_base_calculo: advanceCalculationBase,
+        modo_calculo: "anticipo_100",
+        valor_asegurado: calculatedAdvance,
+      };
+    }
+
+    if (advanceValue !== null) {
+      if (advancePercentage !== null && advanceBaseIncludesIva === null) {
+        reasons.add("Falta confirmar si la base del anticipo incluye IVA.");
+      }
+
+      return {
+        porcentaje: advancePercentage,
+        valor_base_calculo: roundMoney(advanceValue),
+        modo_calculo: "anticipo_100",
+        valor_asegurado: roundMoney(advanceValue),
+      };
+    }
+
+    reasons.add(
+      "Se detectó amparo de buen manejo de anticipo, pero no se encontró valor o porcentaje del anticipo.",
+    );
+    return {
+      porcentaje: advancePercentage,
+      valor_base_calculo: null,
+      modo_calculo: "anticipo_100",
+      valor_asegurado: null,
+    };
+  }
+
   if (fixedAmount !== null) {
     return {
+      porcentaje: null,
       valor_base_calculo: null,
       modo_calculo: "cuantia_fija",
       valor_asegurado: roundMoney(fixedAmount),
@@ -218,6 +318,7 @@ function calculateInsuredValue(
 
   if (percentage !== null && calculationBase !== null) {
     return {
+      porcentaje: percentage,
       valor_base_calculo: calculationBase,
       modo_calculo: "porcentaje_valor_contrato",
       valor_asegurado: roundMoney(calculationBase * percentage),
@@ -230,6 +331,7 @@ function calculateInsuredValue(
     reasons.add("Valor asegurado ingresado manualmente sin regla de cálculo.");
 
     return {
+      porcentaje: null,
       valor_base_calculo: null,
       modo_calculo: "valor_asegurado_manual",
       valor_asegurado: roundMoney(explicitInsuredValue),
@@ -238,6 +340,7 @@ function calculateInsuredValue(
 
   reasons.add("No hay datos suficientes para calcular el valor asegurado.");
   return {
+    porcentaje: percentage,
     valor_base_calculo: calculationBase,
     modo_calculo: "pendiente_revision",
     valor_asegurado: null,
@@ -267,18 +370,232 @@ function normalizeCivilLiabilityInput(
   };
 }
 
+function normalizeAdvancePaymentCoverageInput(
+  coverage: CoverageInput,
+  contract: ContractCoverageContext,
+): CoverageInput {
+  const advancePercentage = resolveAdvancePercentage(coverage, contract);
+  const advanceValue =
+    normalizeNumber(coverage.valor_anticipo) ??
+    normalizeNumber(coverage.valor_asegurado) ??
+    normalizeNumber(coverage.valor_base_calculo) ??
+    normalizeNumber(contract.valorAnticipo);
+
+  return {
+    ...coverage,
+    tipo_amparo: "buen_manejo_anticipo",
+    porcentaje: advancePercentage,
+    cuantia_fija: null,
+    valor_asegurado: advanceValue,
+    valor_anticipo: advanceValue,
+    tipo_vigencia: coverage.tipo_vigencia ?? "contractual",
+    base_vigencia: coverage.base_vigencia ?? "fecha_fin_contrato",
+    dias_adicionales: normalizeNumber(coverage.dias_adicionales) ?? 30,
+    fecha_desde: null,
+    fecha_hasta: null,
+  };
+}
+
+function resolveAdvancePercentage(
+  coverage: CoverageInput,
+  contract: ContractCoverageContext,
+) {
+  const explicitAdvancePercentage = normalizeNumber(coverage.porcentaje_anticipo);
+  const storedPercentage = normalizeNumber(coverage.porcentaje);
+  const sourcePercentage = extractAdvancePercentage(coverage.fuente_texto);
+  const contractPercentage = normalizeNumber(contract.porcentajeAnticipo);
+
+  if (explicitAdvancePercentage !== null) {
+    return explicitAdvancePercentage;
+  }
+
+  if (storedPercentage !== null && storedPercentage > 0 && storedPercentage < 1) {
+    return storedPercentage;
+  }
+
+  return sourcePercentage ?? contractPercentage;
+}
+
+function resolveAdvanceCalculationBase(
+  coverage: CoverageInput,
+  contract: ContractCoverageContext,
+  advanceBaseIncludesIva: boolean | null,
+) {
+  const confirmedCoverageBase = normalizeNumber(coverage.valor_base_calculo);
+  const confirmedContractBase = normalizeNumber(contract.baseCalculoAmparos);
+  const contractValue = normalizeNumber(contract.valorContrato);
+  const textBase = extractAdvanceBaseAmount(coverage.fuente_texto);
+
+  if (advanceBaseIncludesIva === false) {
+    if (textBase !== null) {
+      return textBase;
+    }
+
+    if (
+      confirmedContractBase !== null &&
+      contractValue !== null &&
+      confirmedContractBase < contractValue
+    ) {
+      return confirmedContractBase;
+    }
+
+    return contractValue === null
+      ? confirmedContractBase
+      : roundMoney(contractValue / 1.19);
+  }
+
+  if (advanceBaseIncludesIva === true) {
+    return contractValue ?? confirmedContractBase ?? confirmedCoverageBase;
+  }
+
+  return confirmedContractBase ?? contractValue ?? confirmedCoverageBase;
+}
+
+function extractAdvanceBaseAmount(source: string | null | undefined) {
+  if (!source) {
+    return null;
+  }
+
+  const normalized = normalizeBaseValue(source);
+  const baseMarkers = [
+    "subtotal",
+    "valor sin iva",
+    "sin incluir iva",
+    "antes de iva",
+    "valor estimado sin",
+  ];
+
+  if (!baseMarkers.some((marker) => normalized.includes(marker))) {
+    return null;
+  }
+
+  const sentences = source
+    .replace(/\n+/g, ". ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((sentence) => {
+      const normalizedSentence = normalizeBaseValue(sentence);
+      return baseMarkers.some((marker) => normalizedSentence.includes(marker));
+    });
+
+  for (const sentence of sentences) {
+    const amount = Array.from(sentence.matchAll(/\$\s*[\d.,]+/g))
+      .map((match) => normalizeNumber(match[0]))
+      .find((value): value is number => value !== null);
+
+    if (amount !== undefined) {
+      return amount;
+    }
+  }
+
+  const amounts = Array.from(source.matchAll(/\$\s*[\d.,]+/g))
+    .map((match) => normalizeNumber(match[0]))
+    .filter((amount): amount is number => amount !== null);
+
+  return amounts.length > 0
+    ? amounts.sort((left, right) => right - left)[0]
+    : null;
+}
+
+function extractAdvancePercentage(source: string | null | undefined) {
+  const normalized = normalizeBaseValue(source);
+
+  if (!normalized.includes("anticipo")) {
+    return null;
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((sentence) => sentence.includes("anticipo"));
+  const preferredSentences = sentences.filter((sentence) =>
+    [
+      "valor estimado",
+      "sin incluir iva",
+      "sin iva",
+      "procedimiento de pago",
+      "forma de pago",
+      "pago anticipado",
+      "anticipo del",
+    ].some((marker) => sentence.includes(marker)),
+  );
+  const candidates = [...preferredSentences, ...sentences, normalized]
+    .map((text) => extractPercentageValue(text))
+    .filter((value): value is number => value !== null);
+
+  return candidates.find((value) => value > 0 && value < 1) ?? null;
+}
+
+function extractPercentageValue(text: string) {
+  const numericPercent = text.match(/(\d+(?:[.,]\d+)?)\s*%/);
+
+  if (numericPercent) {
+    const value = normalizeNumber(numericPercent[1]);
+    return value === null ? null : value / 100;
+  }
+
+  if (text.includes("veinte por ciento")) {
+    return 0.2;
+  }
+
+  if (text.includes("treinta por ciento")) {
+    return 0.3;
+  }
+
+  if (text.includes("cincuenta por ciento")) {
+    return 0.5;
+  }
+
+  if (text.includes("cien por ciento")) {
+    return 1;
+  }
+
+  return null;
+}
+
+function inferAdvanceBaseIncludesIva(source: string | null | undefined) {
+  const normalized = normalizeBaseValue(source);
+
+  if (
+    normalized.includes("sin incluir iva") ||
+    normalized.includes("sin iva") ||
+    normalized.includes("antes de iva") ||
+    normalized.includes("no incluye iva")
+  ) {
+    return false;
+  }
+
+  if (
+    normalized.includes("incluido iva") ||
+    normalized.includes("iva incluido") ||
+    normalized.includes("incluye iva")
+  ) {
+    return true;
+  }
+
+  return null;
+}
+
 function buildCivilLiabilitySubcoverages(
   coverage: CoverageInput,
   insuredValue: number | null,
 ): CoverageSubamparo[] {
   const page = coverage.fuente_pagina ?? null;
   const source = coverage.fuente_texto ?? null;
+  const contractSublimitPercent = extractCivilLiabilitySublimitPercent(source);
   const templateSource =
     "El contrato exige el amparo, pero no define cuantía individual. El 50% proviene de la plantilla de liquidación.";
+  const informationalPercent = contractSublimitPercent ?? 0.5;
+  const informationalOrigin: CoverageSubamparo["origen"] = contractSublimitPercent === null
+    ? "regla_plantilla_afisec"
+    : "contrato";
+  const informationalSource = contractSublimitPercent === null
+    ? templateSource
+    : source;
+  const informationalRequiresReview = contractSublimitPercent === null;
 
   const defaults: CoverageSubamparo[] = [
     {
       nombre: "PLO",
+      incluido: true,
       porcentaje_sublimite: 1,
       valor_sublimite: insuredValue,
       origen: "contrato",
@@ -289,20 +606,16 @@ function buildCivilLiabilitySubcoverages(
         "Predios, Labores y Operaciones, PLO, con límite asegurado del 100% de lo exigido para esta póliza.",
       fuente_pagina: page,
     },
-    ...[
-      "Contratistas y subcontratistas",
-      "RC Patronal",
-      "RC Cruzada",
-      "Vehículos propios y no propios",
-    ].map((name) => ({
+    ...getDefaultCivilLiabilitySubcoverageNames(source).map((name) => ({
       nombre: name,
-      porcentaje_sublimite: 0.5,
+      incluido: true,
+      porcentaje_sublimite: informationalPercent,
       valor_sublimite:
-        insuredValue === null ? null : roundMoney(insuredValue * 0.5),
-      origen: "regla_plantilla_afisec" as const,
+        insuredValue === null ? null : roundMoney(insuredValue * informationalPercent),
+      origen: informationalOrigin,
       calculable: false,
-      requiere_revision: true,
-      fuente_texto: templateSource,
+      requiere_revision: informationalRequiresReview,
+      fuente_texto: informationalSource,
       fuente_pagina: page,
     })),
   ];
@@ -322,6 +635,7 @@ function buildCivilLiabilitySubcoverages(
 
     byKey.set(key, {
       nombre: current?.nombre ?? subamparo.nombre,
+      incluido: subamparo.incluido,
       porcentaje_sublimite: isPlo
         ? 1
         : subamparo.porcentaje_sublimite ?? current?.porcentaje_sublimite ?? null,
@@ -329,13 +643,92 @@ function buildCivilLiabilitySubcoverages(
         subamparo.valor_sublimite ?? current?.valor_sublimite ?? null,
       origen: isPlo ? "contrato" : subamparo.origen,
       calculable: isPlo,
-      requiere_revision: isPlo ? subamparo.requiere_revision : true,
+      requiere_revision: subamparo.requiere_revision,
       fuente_texto: subamparo.fuente_texto ?? current?.fuente_texto ?? null,
       fuente_pagina: subamparo.fuente_pagina ?? current?.fuente_pagina ?? null,
     });
   });
 
   return Array.from(byKey.values());
+}
+
+function getDefaultCivilLiabilitySubcoverageNames(source: string | null) {
+  const defaults = [
+    "Contratistas y subcontratistas",
+    "RC Patronal",
+    "RC Cruzada",
+    "Vehículos propios y no propios",
+  ];
+  const normalizedSource = normalizeBaseValue(source);
+  const frequent = [
+    {
+      name: "Vehículos propios y no propios",
+      markers: ["vehiculos propios", "vehiculos no propios"],
+    },
+    { name: "Gastos médicos", markers: ["gastos medicos"] },
+    {
+      name: "Responsabilidad por contaminación ambiental",
+      markers: ["contaminacion ambiental", "contaminación ambiental"],
+    },
+    {
+      name: "Daño emergente y lucro cesante",
+      markers: ["dano emergente", "daño emergente", "lucro cesante"],
+    },
+    {
+      name: "Perjuicios extrapatrimoniales",
+      markers: ["extrapatrimoniales", "perjuicios extrapatrimoniales"],
+    },
+  ];
+
+  for (const item of frequent) {
+    if (
+      item.markers.some((marker) =>
+        normalizedSource.includes(normalizeBaseValue(marker)),
+      ) &&
+      !defaults.some((name) => getCivilLiabilitySubcoverageKey(name) === getCivilLiabilitySubcoverageKey(item.name))
+    ) {
+      defaults.push(item.name);
+    }
+  }
+
+  return defaults;
+}
+
+function extractCivilLiabilitySublimitPercent(source: string | null) {
+  const normalized = normalizeBaseValue(source);
+
+  if (
+    !normalized.includes("plo") ||
+    !(
+      normalized.includes("cada uno") ||
+      normalized.includes("estos amparos") ||
+      normalized.includes("amparos adicionales") ||
+      normalized.includes("cada amparo")
+    )
+  ) {
+    return null;
+  }
+
+  const numericPercent = normalized.match(/(\d+(?:[.,]\d+)?)\s*%/);
+
+  if (numericPercent) {
+    const value = normalizeNumber(numericPercent[1]);
+    return value === null ? null : value / 100;
+  }
+
+  if (normalized.includes("treinta por ciento")) {
+    return 0.3;
+  }
+
+  if (normalized.includes("cincuenta por ciento")) {
+    return 0.5;
+  }
+
+  if (normalized.includes("cien por ciento")) {
+    return 1;
+  }
+
+  return null;
 }
 
 function calculateStartDate(
@@ -384,15 +777,14 @@ function calculateEndDate(
 
   if (isClosureBasedPostContractualCoverage(coverage)) {
     const startDate = explicitStartDate ?? contract.fechaFin;
-    const contractDays = calculateContractualDays(contract);
     const additionalDays = getEffectiveAdditionalDays(coverage) ?? 0;
 
-    if (startDate === null || contractDays === null) {
-      reasons.add("Falta plazo contractual para calcular fecha hasta.");
+    if (startDate === null) {
+      reasons.add("Falta fecha fin del contrato para estimar la vigencia postcontractual.");
       return null;
     }
 
-    return addDays(startDate, contractDays + additionalDays);
+    return addDays(startDate, additionalDays);
   }
 
   const additionalDays = getEffectiveAdditionalDays(coverage);
@@ -430,17 +822,12 @@ function calculateValidityDays(
     return null;
   }
 
-  const start = new Date(`${startsAt}T00:00:00.000Z`);
-  const end = new Date(`${endsAt}T00:00:00.000Z`);
+  const days = diffDaysDateOnly(startsAt, endsAt);
 
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+  if (days === null) {
     reasons.add("Hay fechas inválidas para calcular días de vigencia.");
     return null;
   }
-
-  const days = Math.round(
-    (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-  );
 
   if (days <= 0) {
     reasons.add("Los días de vigencia calculados son cero o negativos.");
@@ -491,7 +878,7 @@ function getEffectiveAdditionalDays(coverage: CoverageInput) {
   }
 
   if (isClosureBasedPostContractualCoverage(coverage)) {
-    return 30;
+    return extractPostContractualDays(coverage.fuente_texto) ?? 30;
   }
 
   if (isContractEndBasedCoverage(coverage)) {
@@ -503,6 +890,42 @@ function getEffectiveAdditionalDays(coverage: CoverageInput) {
     coverage.tipo_vigencia === "post_contractual"
   ) {
     return 0;
+  }
+
+  return null;
+}
+
+function extractPostContractualDays(source: string | null | undefined) {
+  const normalized = normalizeBaseValue(source);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const numericDays = normalized.match(/(\d+)\s*dias?/);
+
+  if (numericDays) {
+    const days = normalizeNumber(numericDays[1]);
+    return days === null ? null : Math.trunc(days);
+  }
+
+  const numericYears = normalized.match(/(\d+)\s*anos?/);
+
+  if (numericYears) {
+    const years = normalizeNumber(numericYears[1]);
+    return years === null ? null : Math.trunc(years * 365);
+  }
+
+  if (
+    normalized.includes("un ano") ||
+    normalized.includes("un (1) ano") ||
+    normalized.includes("uno (1) ano")
+  ) {
+    return 365;
+  }
+
+  if (normalized.includes("tres anos") || normalized.includes("tres (3) anos")) {
+    return 1095;
   }
 
   return null;
@@ -584,12 +1007,26 @@ function normalizeBaseVigencia(value: string | null | undefined) {
 function isContractEndBasedCoverage(coverage: CoverageInput) {
   return (
     isComplianceCoverage(coverage) ||
+    isAdvancePaymentCoverage(coverage) ||
     isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto) ||
     isCivilLiabilityCoverage(coverage.tipo_amparo, coverage.fuente_texto) ||
     isPersonalAccidentCoverage(coverage) ||
     isMedicalExpenseCoverage(coverage) ||
     isFuneralAidCoverage(coverage)
   );
+}
+
+function isAdvancePaymentCoverage(coverage: CoverageInput) {
+  return coverageTextIncludes(coverage, [
+    "buen manejo de anticipo",
+    "buen manejo del anticipo",
+    "buen manejo y correcta inversion",
+    "correcta inversion del anticipo",
+    "correcta inversión del anticipo",
+    "amortizacion del anticipo",
+    "amortización del anticipo",
+    "buen_manejo_anticipo",
+  ]);
 }
 
 function isComplianceCoverage(coverage: CoverageInput) {
@@ -631,6 +1068,10 @@ function isServiceQualityCoverage(coverage: CoverageInput) {
 }
 
 function isClosureBasedPostContractualCoverage(coverage: CoverageInput) {
+  if (isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) {
+    return false;
+  }
+
   return (
     isServiceQualityCoverage(coverage) ||
     normalizeBaseVigencia(coverage.base_vigencia) === "acta_recibo_final" ||
@@ -683,29 +1124,8 @@ function normalizeBaseValue(value: string | null | undefined) {
     .toLowerCase();
 }
 
-function calculateContractualDays(contract: ContractCoverageContext) {
-  if (!contract.fechaInicio || !contract.fechaFin) {
-    return null;
-  }
-
-  const start = new Date(`${contract.fechaInicio}T00:00:00.000Z`);
-  const end = new Date(`${contract.fechaFin}T00:00:00.000Z`);
-
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-    return null;
-  }
-
-  const days = Math.round(
-    (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
-  );
-
-  return days > 0 ? days : null;
-}
-
 function addDays(date: string, days: number) {
-  const parsedDate = new Date(`${date}T00:00:00.000Z`);
-  parsedDate.setUTCDate(parsedDate.getUTCDate() + days);
-  return parsedDate.toISOString().slice(0, 10);
+  return addDaysToDateOnly(date, days) ?? date;
 }
 
 function roundMoney(value: number) {
@@ -769,7 +1189,11 @@ function getCivilLiabilitySubcoverageKey(name: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 
-  if (normalized.includes("plo") || normalized.includes("predios")) {
+  if (
+    normalized.includes("plo") ||
+    normalized.includes("predios") ||
+    (normalized.includes("labores") && normalized.includes("operaciones"))
+  ) {
     return "plo";
   }
 
@@ -785,8 +1209,36 @@ function getCivilLiabilitySubcoverageKey(name: string) {
     return "rc_cruzada";
   }
 
+  if (normalized.includes("dano emergente") || normalized.includes("lucro cesante")) {
+    return "dano_emergente_lucro_cesante";
+  }
+
+  if (normalized.includes("extrapatrimonial")) {
+    return "perjuicios_extrapatrimoniales";
+  }
+
+  if (normalized.includes("contaminacion")) {
+    return "contaminacion_ambiental";
+  }
+
+  if (normalized.includes("gastos medicos")) {
+    return "gastos_medicos";
+  }
+
+  if (normalized.includes("propios") && normalized.includes("no propios")) {
+    return "vehiculos_propios_no_propios";
+  }
+
+  if (normalized.includes("no propios")) {
+    return "vehiculos_propios_no_propios";
+  }
+
+  if (normalized.includes("propios")) {
+    return "vehiculos_propios_no_propios";
+  }
+
   if (normalized.includes("vehicul")) {
-    return "vehiculos";
+    return "vehiculos_propios_no_propios";
   }
 
   return normalized;
@@ -802,7 +1254,6 @@ function isAmbiguousSource(source: string | null | undefined) {
     "no se especifica",
     "sin especificar",
     "aproximad",
-    "estimad",
     "según corresponda",
     "segun corresponda",
   ].some((marker) => source.toLowerCase().includes(marker));

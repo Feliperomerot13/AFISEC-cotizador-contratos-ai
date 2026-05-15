@@ -28,6 +28,7 @@ const dateSchema = z
   .nullable();
 const subcoverageSchema = z.object({
   nombre: z.string(),
+  incluido: z.boolean().default(true),
   porcentaje_sublimite: z.number().nullable(),
   valor_sublimite: z.number().nullable(),
   origen: z.enum(["contrato", "regla_plantilla_afisec"]),
@@ -43,6 +44,51 @@ const sourcedValueSchema = z
     confianza: confidenceSchema,
     pagina: pageSchema,
     fuente: sourceSchema,
+  })
+  .strict();
+
+const sourcedNumberSchema = z
+  .object({
+    valor: z.number().nonnegative().nullable(),
+    confianza: confidenceSchema,
+    pagina: pageSchema,
+    fuente: sourceSchema,
+  })
+  .strict();
+
+const sourcedIntegerSchema = z
+  .object({
+    valor: z.number().int().nonnegative().nullable(),
+    confianza: confidenceSchema,
+    pagina: pageSchema,
+    fuente: sourceSchema,
+  })
+  .strict();
+
+const sourcedDateSchema = z
+  .object({
+    valor: dateSchema,
+    confianza: confidenceSchema,
+    pagina: pageSchema,
+    fuente: sourceSchema,
+  })
+  .strict();
+
+const guaranteeSchema = z
+  .object({
+    tipo_amparo: z.string().min(1),
+    porcentaje: z.number().nonnegative().nullable(),
+    cuantia_fija: z.number().nonnegative().nullable(),
+    valor_asegurado: z.number().nonnegative().nullable(),
+    tipo_vigencia: coverageValidityTypeSchema.nullable(),
+    base_vigencia: coverageValidityBaseSchema.nullable(),
+    dias_adicionales: z.number().int().nonnegative().nullable(),
+    fecha_desde: dateSchema,
+    fecha_hasta: dateSchema,
+    fuente_texto: sourceSchema,
+    fuente_pagina: pageSchema,
+    confianza: confidenceSchema,
+    subamparos: z.array(subcoverageSchema).default([]),
   })
   .strict();
 
@@ -93,39 +139,37 @@ export const aiExtractionSchema = z
         fuente: sourceSchema,
       })
       .strict(),
-    fecha_fin: z
-      .object({
-        valor: dateSchema,
-        confianza: confidenceSchema,
-        pagina: pageSchema,
-        fuente: sourceSchema,
-      })
-      .strict(),
+    fecha_fin: sourcedDateSchema,
     plazo: sourcedValueSchema,
-    garantias: z.array(
-      z
-        .object({
-          tipo_amparo: z.string().min(1),
-          porcentaje: z.number().nonnegative().nullable(),
-          cuantia_fija: z.number().nonnegative().nullable(),
-          valor_asegurado: z.number().nonnegative().nullable(),
-          tipo_vigencia: coverageValidityTypeSchema.nullable(),
-          base_vigencia: coverageValidityBaseSchema.nullable(),
-          dias_adicionales: z.number().int().nonnegative().nullable(),
-          fecha_desde: dateSchema,
-          fecha_hasta: dateSchema,
-          fuente_texto: sourceSchema,
-          fuente_pagina: pageSchema,
-          confianza: confidenceSchema,
-        })
-        .strict(),
-    ),
+    garantias: z.array(guaranteeSchema),
     campos_no_encontrados: z.array(z.string()),
     alertas: z.array(z.string()),
   })
   .strict();
 
 export type AIExtraction = z.infer<typeof aiExtractionSchema>;
+export const amendmentExtractionSchema = z
+  .object({
+    numero_modificacion: sourcedValueSchema,
+    tipo_modificacion: sourcedValueSchema,
+    contrato_afectado: sourcedValueSchema,
+    valor_adicion: sourcedNumberSchema,
+    valor_contrato_acumulado: sourcedNumberSchema,
+    fecha_desde: sourcedDateSchema,
+    fecha_hasta: sourcedDateSchema,
+    dias_prorroga: sourcedIntegerSchema,
+    fuente_texto: sourceSchema,
+    fuente_pagina: pageSchema,
+    confianza: confidenceSchema,
+    requiere_revision: z.boolean(),
+    motivo_revision: z.string().nullable(),
+    garantias: z.array(guaranteeSchema),
+    campos_no_encontrados: z.array(z.string()),
+    alertas: z.array(z.string()),
+  })
+  .strict();
+
+export type AmendmentExtraction = z.infer<typeof amendmentExtractionSchema>;
 export type AIConfidence = z.infer<typeof confidenceSchema>;
 export type AICoverageValidityType = z.infer<
   typeof coverageValidityTypeSchema
@@ -192,6 +236,7 @@ export const uploadFormSchema = z.object({
   nitCliente: requiredTrimmedString(3, "El NIT del cliente es obligatorio."),
   ejecutivo: z.enum(EXECUTIVES),
   tipoDocumento: z.enum(DOCUMENT_TYPES),
+  contratoBaseId: z.string().uuid().optional(),
 });
 
 export const validateContractSchema = z.object({

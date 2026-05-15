@@ -20,14 +20,16 @@ import {
   countLowConfidenceFields,
   estimatePdfPageCount,
   extractPdfTextByPage,
+  extractStructuredAmendment,
   extractStructuredContract,
   InvalidAIJsonError,
   stringifyPages,
+  type OpenAIAmendmentExtractionResult,
   type OpenAIExtractionResult,
   type PageSelectionDetail,
 } from "@/lib/ai";
 import { getErrorMessage } from "@/lib/api";
-import type { AIExtraction } from "@/lib/schemas";
+import type { AIExtraction, AmendmentExtraction } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 type ProcessingContext = {
@@ -137,6 +139,18 @@ export async function processContract(contratoId: string) {
     });
 
     const env = getServerEnv();
+
+    if (documento.tipo_documento === "otrosi") {
+      await processAmendmentExtraction({
+        contratoId,
+        documentoId: documento.id,
+        extractedText: textoExtraido,
+        openAiContext: extractionContext.text,
+        deployment: env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
+      });
+      return;
+    }
+
     logExtractionAttemptForDevelopment({
       deployment: env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
       phase: "primary_start",
@@ -307,6 +321,100 @@ async function saveStructuredExtraction(
   }
 }
 
+async function processAmendmentExtraction({
+  contratoId,
+  documentoId,
+  extractedText,
+  openAiContext,
+  deployment,
+}: {
+  contratoId: string;
+  documentoId: string;
+  extractedText: string;
+  openAiContext: string;
+  deployment: string;
+}) {
+  const supabase = getSupabaseAdmin();
+
+  logExtractionAttemptForDevelopment({
+    deployment,
+    phase: "amendment_start",
+  });
+
+  const result = await extractStructuredAmendment(deployment, openAiContext);
+
+  logAmendmentResultForDevelopment(result);
+
+  await insertAmendmentExtractionLog({
+    contractId: contratoId,
+    documentId: documentoId,
+    extractedText,
+    result,
+    resultado: getAmendmentExtractionLogResult(result.extraction),
+  });
+
+  const modificationPayload = mapAmendmentToModification(
+    result.extraction,
+    contratoId,
+    documentoId,
+  );
+  const { data: modification, error: modificationError } = await supabase
+    .from("modificaciones_contractuales")
+    .insert(modificationPayload)
+    .select("id")
+    .single();
+
+  if (modificationError || !modification) {
+    throw new Error(
+      `Fallo al guardar la modificación contractual: ${modificationError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  const { data: contract, error: contractError } = await supabase
+    .from("contratos")
+    .select("valor_contrato,base_calculo_amparos,fecha_inicio,fecha_fin")
+    .eq("id", contratoId)
+    .single();
+
+  if (contractError || !contract) {
+    throw new Error(
+      `Fallo al consultar contrato base para amparos del otrosí: ${contractError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  const coverageMapping = mapExtractionToCoverageMapping(
+    { garantias: result.extraction.garantias },
+    {
+      contratoId,
+      modificacionId: modification.id,
+      valorContrato: contract.valor_contrato,
+      baseCalculoAmparos: contract.base_calculo_amparos,
+      fechaInicio: contract.fecha_inicio,
+      fechaFin: contract.fecha_fin,
+    },
+  );
+
+  logCoverageRowsForDevelopment(coverageMapping);
+
+  if (coverageMapping.rows.length > 0) {
+    const { error: coverageError } = await supabase
+      .from("amparos")
+      .insert(coverageMapping.rows);
+
+    if (coverageError) {
+      throw new Error(
+        `Fallo al guardar amparos asociados al otrosí: ${coverageError.message}`,
+      );
+    }
+  }
+
+  await updateContractOrThrow(contratoId, {
+    estado: "pendiente_validacion",
+    mensaje_error: null,
+    fecha_procesamiento: new Date().toISOString(),
+  });
+}
+
 export function mapExtractionToContractUpdate(extraction: unknown): ContractUpdate {
   const record = asRecord(extraction);
   const valorContrato = asRecord(record.valor_contrato);
@@ -346,6 +454,7 @@ export function mapExtractionToCoverageRows(
   extraction: unknown,
   contract: {
     contratoId: string;
+    modificacionId?: string | null;
     valorContrato: unknown;
     baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
@@ -359,6 +468,7 @@ function mapExtractionToCoverageMapping(
   extraction: unknown,
   contract: {
     contratoId: string;
+    modificacionId?: string | null;
     valorContrato: unknown;
     baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
@@ -376,6 +486,11 @@ function mapExtractionToCoverageMapping(
     fechaInicio: normalizeDate(contract.fechaInicio),
     fechaFin: normalizeDate(contract.fechaFin),
   };
+  const advanceInfo = extractAdvanceInfoFromExtraction(
+    record,
+    contractContext.valorContrato,
+    contractContext.baseCalculoAmparos,
+  );
   const result: CoverageMappingResult = {
     rows: [],
     skipped: [],
@@ -415,6 +530,13 @@ function mapExtractionToCoverageMapping(
       confianza:
         normalizeEnum(coverageRecord.confianza, CONFIDENCE_VALUES, "baja") ??
         "baja",
+      ...(isAdvanceCoverageRecord(coverageRecord)
+        ? {
+            valor_anticipo: advanceInfo.valorAnticipo,
+            porcentaje_anticipo: advanceInfo.porcentajeAnticipo,
+            anticipo_base_incluye_iva: advanceInfo.baseIncluyeIva,
+          }
+        : {}),
     };
 
     if (isWeakCoverageInference(normalizedInput)) {
@@ -432,6 +554,9 @@ function mapExtractionToCoverageMapping(
     const normalized = normalizeCoverage(normalizedInput, {
       valorContrato: contractContext.valorContrato,
       baseCalculoAmparos: contractContext.baseCalculoAmparos,
+      valorAnticipo: advanceInfo.valorAnticipo,
+      porcentajeAnticipo: advanceInfo.porcentajeAnticipo,
+      anticipoBaseIncluyeIva: advanceInfo.baseIncluyeIva,
       fechaInicio: contractContext.fechaInicio,
       fechaFin: contractContext.fechaFin,
     });
@@ -449,7 +574,7 @@ function mapExtractionToCoverageMapping(
 
     result.rows.push(validateCoverageRow({
       contrato_id: contract.contratoId,
-      modificacion_id: null,
+      modificacion_id: contract.modificacionId ?? null,
       tasa_referencia_id: null,
       tipo_amparo: normalized.tipo_amparo,
       porcentaje: normalized.porcentaje,
@@ -580,6 +705,60 @@ function getExtractionQualityScore(extraction: AIExtraction) {
   );
 }
 
+function getAmendmentExtractionLogResult(
+  extraction: AmendmentExtraction,
+): "exito" | "parcial" {
+  return extraction.alertas.length > 0 ||
+    extraction.campos_no_encontrados.length > 0 ||
+    extraction.requiere_revision
+    ? "parcial"
+    : "exito";
+}
+
+function mapAmendmentToModification(
+  extraction: AmendmentExtraction,
+  contratoId: string,
+  documentoId: string,
+): Database["public"]["Tables"]["modificaciones_contractuales"]["Insert"] {
+  const reviewReasons = [
+    extraction.motivo_revision,
+    extraction.numero_modificacion.valor ? null : "Falta número de otrosí.",
+    extraction.tipo_modificacion.valor ? null : "Falta tipo de modificación.",
+    extraction.valor_adicion.valor === null &&
+    extraction.dias_prorroga.valor === null &&
+    extraction.fecha_hasta.valor === null
+      ? "No se detectó adición, prórroga ni nueva fecha de terminación."
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    contrato_id: contratoId,
+    documento_id: documentoId,
+    numero_modificacion: normalizeText(extraction.numero_modificacion.valor),
+    tipo_modificacion: normalizeText(extraction.tipo_modificacion.valor),
+    valor_adicion: normalizeNumber(extraction.valor_adicion.valor),
+    valor_contrato_acumulado: normalizeNumber(
+      extraction.valor_contrato_acumulado.valor,
+    ),
+    fecha_desde: normalizeDate(extraction.fecha_desde.valor),
+    fecha_hasta: normalizeDate(extraction.fecha_hasta.valor),
+    dias_prorroga: normalizeInteger(extraction.dias_prorroga.valor),
+    fuente_pagina:
+      extraction.fuente_pagina ??
+      extraction.numero_modificacion.pagina ??
+      extraction.tipo_modificacion.pagina,
+    fuente_texto:
+      normalizeText(extraction.fuente_texto) ??
+      normalizeText(extraction.numero_modificacion.fuente) ??
+      normalizeText(extraction.tipo_modificacion.fuente),
+    confianza: extraction.confianza,
+    requiere_revision: extraction.requiere_revision || Boolean(reviewReasons),
+    motivo_revision: reviewReasons || null,
+  };
+}
+
 function getCriticalMissingFields(extraction: AIExtraction) {
   const missing: string[] = [];
 
@@ -620,18 +799,59 @@ function applyDeterministicDateFallbacks(
   extraction: AIExtraction,
   extractedText: string,
 ): AIExtraction {
+  const actaInicioDependency = findActaInicioDependencyCandidate(extractedText);
   const candidate = findContractDurationDateCandidate(extractedText);
+  let baseExtraction = extraction;
+
+  if (actaInicioDependency && !actaInicioDependency.startDate) {
+    const actaDuration = candidate?.duration ??
+      extractDuration(actaInicioDependency.source);
+    const plazoFromActa = durationToPlazoText(
+      actaDuration,
+      "contados a partir de la fecha de suscripción del Acta de Inicio",
+    );
+
+    baseExtraction = {
+      ...extraction,
+      fecha_inicio: {
+        ...extraction.fecha_inicio,
+        valor: null,
+        confianza: "baja",
+        pagina: actaInicioDependency.pageNumber,
+        fuente: actaInicioDependency.source,
+      },
+      fecha_fin: {
+        ...extraction.fecha_fin,
+        valor: null,
+        confianza: "baja",
+        pagina: actaInicioDependency.pageNumber,
+        fuente: actaInicioDependency.source,
+      },
+      plazo: normalizeText(extraction.plazo.valor)
+        ? extraction.plazo
+        : {
+            valor: plazoFromActa,
+            confianza: plazoFromActa ? "media" : "baja",
+            pagina: actaInicioDependency.pageNumber,
+            fuente: actaInicioDependency.source,
+          },
+      alertas: [
+        ...extraction.alertas,
+        "El plazo depende del Acta de Inicio; ingrese la fecha de inicio para calcular fecha fin.",
+      ],
+    };
+  }
 
   if (!candidate) {
-    return extraction;
+    return baseExtraction;
   }
 
   const next: AIExtraction = {
-    ...extraction,
-    fecha_inicio: { ...extraction.fecha_inicio },
-    fecha_fin: { ...extraction.fecha_fin },
-    alertas: [...extraction.alertas],
-    campos_no_encontrados: [...extraction.campos_no_encontrados],
+    ...baseExtraction,
+    fecha_inicio: { ...baseExtraction.fecha_inicio },
+    fecha_fin: { ...baseExtraction.fecha_fin },
+    alertas: [...baseExtraction.alertas],
+    campos_no_encontrados: [...baseExtraction.campos_no_encontrados],
   };
   const currentStart = normalizeDate(next.fecha_inicio.valor);
   const startDate = currentStart ?? candidate.startDate;
@@ -694,7 +914,10 @@ function findContractDurationDateCandidate(text: string) {
       continue;
     }
 
-    const startDate = extractFirstSpanishDate(pageText);
+    const dependsOnActaInicio = normalized.includes("acta de inicio");
+    const startDate = dependsOnActaInicio
+      ? extractActaInicioDate(pageText)
+      : extractFirstSpanishDate(pageText);
     const duration = extractDuration(pageText);
 
     if (startDate || duration) {
@@ -704,6 +927,53 @@ function findContractDurationDateCandidate(text: string) {
         duration,
         source: extractRelevantDateSentence(pageText),
       };
+    }
+  }
+
+  return null;
+}
+
+function findActaInicioDependencyCandidate(text: string) {
+  const pagePattern = /--- Página (\d+) ---\n([\s\S]*?)(?=\n\n--- Página \d+ ---|$)/g;
+  const pages = Array.from(text.matchAll(pagePattern));
+
+  for (const match of pages) {
+    const pageNumber = Number(match[1]);
+    const pageText = match[2] ?? "";
+    const normalized = normalizeForDateSearch(pageText);
+
+    if (
+      normalized.includes("acta de inicio") &&
+      (normalized.includes("a partir") ||
+        normalized.includes("contado") ||
+        normalized.includes("contados") ||
+        normalized.includes("plazo") ||
+        normalized.includes("duracion"))
+    ) {
+      return {
+        pageNumber: Number.isFinite(pageNumber) ? pageNumber : null,
+        startDate: extractActaInicioDate(pageText),
+        source: extractRelevantDateSentence(pageText),
+      };
+    }
+  }
+
+  return null;
+}
+
+function extractActaInicioDate(text: string) {
+  const sentences = text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((sentence) =>
+      normalizeForDateSearch(sentence).includes("acta de inicio"),
+    );
+
+  for (const sentence of sentences) {
+    const date = extractFirstSpanishDate(sentence);
+
+    if (date) {
+      return date;
     }
   }
 
@@ -773,6 +1043,10 @@ function extractDuration(text: string) {
     return { years: 0, months: 12, days: 0 };
   }
 
+  if (/\bdoscientos cuarenta\b/.test(normalized) && /\bdias?\b/.test(normalized)) {
+    return { years: 0, months: 0, days: 240 };
+  }
+
   return null;
 }
 
@@ -807,6 +1081,29 @@ function addDuration(
   parsedDate.setUTCDate(parsedDate.getUTCDate() + duration.days);
 
   return parsedDate.toISOString().slice(0, 10);
+}
+
+function durationToPlazoText(
+  duration: { years: number; months: number; days: number } | null,
+  suffix: string,
+) {
+  if (!duration) {
+    return null;
+  }
+
+  const parts = [
+    duration.years > 0
+      ? `${duration.years} ${duration.years === 1 ? "año" : "años"}`
+      : null,
+    duration.months > 0
+      ? `${duration.months} ${duration.months === 1 ? "mes" : "meses"}`
+      : null,
+    duration.days > 0
+      ? `${duration.days} ${duration.days === 1 ? "día" : "días"}`
+      : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `${parts.join(" ")} ${suffix}` : null;
 }
 
 function getSpanishMonthNumber(month: string) {
@@ -960,6 +1257,260 @@ function hasPerPersonCondition(source: string | null) {
   ].some((marker) => normalized.toLowerCase().includes(marker));
 }
 
+function extractAdvanceInfoFromExtraction(
+  extraction: Record<string, unknown>,
+  contractValue: number | null,
+  confirmedBase: number | null,
+) {
+  const text = collectStrings(extraction).join(" ");
+  const normalized = normalizeForLooseSearch(text);
+  const porcentajeAnticipo = extractPercentageNearAdvance(normalized);
+  const baseIncluyeIva = inferAdvanceBaseIncludesIva(normalized);
+  const subtotal = extractAmountNearMarkers(text, [
+    "subtotal",
+    "valor sin iva",
+    "antes de iva",
+    "sin incluir iva",
+  ]);
+  const fixedAdvance = extractFixedAdvanceAmount(text);
+  let base =
+    baseIncluyeIva === false
+      ? subtotal ?? (contractValue === null ? null : roundMoney(contractValue / 1.19))
+      : baseIncluyeIva === true
+        ? contractValue
+        : confirmedBase ?? contractValue;
+
+  if (baseIncluyeIva === false && subtotal !== null) {
+    base = subtotal;
+  }
+
+  const valorAnticipo =
+    porcentajeAnticipo !== null && base !== null
+      ? roundMoney(base * porcentajeAnticipo)
+      : fixedAdvance;
+
+  return {
+    valorAnticipo,
+    porcentajeAnticipo,
+    baseIncluyeIva,
+  };
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectStrings(item));
+  }
+
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap((item) => collectStrings(item));
+  }
+
+  return [];
+}
+
+function isAdvanceCoverageRecord(record: Record<string, unknown>) {
+  const text = normalizeForLooseSearch(
+    `${record.tipo_amparo ?? ""} ${record.fuente_texto ?? ""}`,
+  );
+
+  return (
+    text.includes("buen manejo") ||
+    text.includes("anticipo") ||
+    text.includes("correcta inversion") ||
+    text.includes("amortizacion del anticipo") ||
+    text.includes("buen_manejo_anticipo")
+  );
+}
+
+function extractPercentageNearAdvance(normalizedText: string) {
+  const advanceSentences = normalizedText
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((sentence) => sentence.includes("anticipo"));
+  const preferredSentences = advanceSentences.filter((sentence) =>
+    [
+      "valor estimado",
+      "sin incluir iva",
+      "sin iva",
+      "procedimiento de pago",
+      "forma de pago",
+      "pago anticipado",
+      "anticipo del",
+    ].some((marker) => sentence.includes(marker)),
+  );
+  const sentenceMatch =
+    findAdvancePercentageCandidate(preferredSentences) ??
+    findAdvancePercentageCandidate(advanceSentences);
+
+  if (sentenceMatch !== null) {
+    return sentenceMatch;
+  }
+
+  const advanceIndexes = Array.from(normalizedText.matchAll(/anticipo/g)).map(
+    (match) => match.index ?? -1,
+  );
+
+  for (const advanceIndex of advanceIndexes) {
+    const searchArea = normalizedText.slice(
+      Math.max(0, advanceIndex - 700),
+      advanceIndex + 1200,
+    );
+    const value = findAdvancePercentageCandidate([searchArea]);
+
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return findAdvancePercentageCandidate([normalizedText]);
+}
+
+function findAdvancePercentageCandidate(texts: string[]) {
+  const candidates = texts
+    .map((text) => extractPercentageFromText(text))
+    .filter((value): value is number => value !== null);
+
+  return candidates.find((value) => value > 0 && value < 1) ?? null;
+}
+
+function extractPercentageFromText(text: string) {
+  const numeric = text.match(/(\d+(?:[.,]\d+)?)\s*%/);
+
+  if (numeric) {
+    const value = normalizeNumber(numeric[1]);
+    return value === null ? null : value / 100;
+  }
+
+  if (text.includes("veinte por ciento")) {
+    return 0.2;
+  }
+
+  if (text.includes("treinta por ciento")) {
+    return 0.3;
+  }
+
+  if (text.includes("cincuenta por ciento")) {
+    return 0.5;
+  }
+
+  if (text.includes("cien por ciento")) {
+    return 1;
+  }
+
+  return null;
+}
+
+function inferAdvanceBaseIncludesIva(normalizedText: string) {
+  if (
+    normalizedText.includes("sin incluir iva") ||
+    normalizedText.includes("sin iva") ||
+    normalizedText.includes("antes de iva") ||
+    normalizedText.includes("no incluye iva")
+  ) {
+    return false;
+  }
+
+  if (
+    normalizedText.includes("incluido iva") ||
+    normalizedText.includes("iva incluido") ||
+    normalizedText.includes("incluye iva")
+  ) {
+    return true;
+  }
+
+  return null;
+}
+
+function extractAmountNearMarkers(text: string, markers: string[]) {
+  const normalized = normalizeForLooseSearch(text);
+  const amounts: number[] = [];
+  const sentences = text.replace(/\n+/g, ". ").split(/(?<=[.!?;:])\s+/);
+
+  for (const marker of markers) {
+    const sentence = sentences.find((item) =>
+      normalizeForLooseSearch(item).includes(normalizeForLooseSearch(marker)),
+    );
+    const amount = sentence
+      ? Array.from(sentence.matchAll(/\$\s*[\d.,]+/g))
+          .map((match) => normalizeNumber(match[0]))
+          .find((value): value is number => value !== null)
+      : null;
+
+    if (amount !== null && typeof amount !== "undefined") {
+      return amount;
+    }
+  }
+
+  markers.forEach((marker) => {
+    const normalizedMarker = normalizeForLooseSearch(marker);
+    let index = normalized.indexOf(normalizedMarker);
+
+    while (index >= 0) {
+      const slice = text.slice(Math.max(0, index - 180), index + 260);
+      const matches = Array.from(slice.matchAll(/\$\s*[\d.,]+/g))
+        .map((match) => normalizeNumber(match[0]))
+        .filter((amount): amount is number => amount !== null);
+
+      amounts.push(...matches);
+      index = normalized.indexOf(normalizedMarker, index + normalizedMarker.length);
+    }
+  });
+
+  return amounts.length > 0
+    ? amounts.sort((left, right) => right - left)[0]
+    : null;
+}
+
+function extractFixedAdvanceAmount(text: string) {
+  const sentences = text
+    .replace(/\n+/g, ". ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((sentence) => {
+      const normalized = normalizeForLooseSearch(sentence);
+      return (
+        normalized.includes("anticipo") ||
+        normalized.includes("pago anticipado")
+      );
+    });
+
+  for (const sentence of sentences) {
+    const normalized = normalizeForLooseSearch(sentence);
+
+    if (extractPercentageFromText(normalized) !== null) {
+      continue;
+    }
+
+    const amount = Array.from(sentence.matchAll(/\$\s*[\d.,]+/g))
+      .map((match) => normalizeNumber(match[0]))
+      .find((value): value is number => value !== null);
+
+    if (amount !== undefined) {
+      return amount;
+    }
+  }
+
+  return extractAmountNearMarkers(text, [
+    "valor del anticipo",
+    "suma entregada como anticipo",
+    "anticipo por valor",
+    "pago anticipado por valor",
+  ]);
+}
+
+function normalizeForLooseSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 function prepareCoverageRecords(rawCoverages: unknown[]) {
   const civilLiabilityRecords = rawCoverages
     .map((coverage, index) => ({
@@ -978,22 +1529,25 @@ function prepareCoverageRecords(rawCoverages: unknown[]) {
   const nonCivilLiability = rawCoverages.filter(
     (_coverage, index) => !civilLiabilityIndexes.has(index),
   );
+  const sourceRecords = selectCivilLiabilitySourceRecords(
+    civilLiabilityRecords.map(({ record }) => record),
+  );
   const mainRecord =
-    civilLiabilityRecords.find(({ record }) =>
+    sourceRecords.find((record) =>
       normalizeCivilLiabilityText(record).includes("responsabilidad civil"),
-    )?.record ?? civilLiabilityRecords[0].record;
-  const sourceText = civilLiabilityRecords
-    .map(({ record }) => normalizeText(record.fuente_texto))
+    ) ?? sourceRecords[0] ?? civilLiabilityRecords[0].record;
+  const sourceText = sourceRecords
+    .map((record) => normalizeText(record.fuente_texto))
     .filter(Boolean)
     .join(" ");
   const fuentePagina =
-    civilLiabilityRecords
-      .map(({ record }) => normalizeInteger(record.fuente_pagina))
+    sourceRecords
+      .map((record) => normalizeInteger(record.fuente_pagina))
       .filter((page): page is number => page !== null)
       .sort((left, right) => left - right)[0] ?? null;
   const fixedAmount =
-    civilLiabilityRecords
-      .map(({ record }) =>
+    sourceRecords
+      .map((record) =>
         normalizeNumber(record.cuantia_fija ?? record.valor_asegurado),
       )
       .filter((amount): amount is number => amount !== null)
@@ -1017,6 +1571,23 @@ function prepareCoverageRecords(rawCoverages: unknown[]) {
         "media",
     },
   ];
+}
+
+function selectCivilLiabilitySourceRecords(records: Record<string, unknown>[]) {
+  const preferred = records.filter((record) => {
+    const text = normalizeCivilLiabilityText(record);
+
+    return (
+      text.includes("poliza de responsabilidad civil extracontractual") ||
+      text.includes("póliza de responsabilidad civil extracontractual") ||
+      text.includes("responsabilidad civil extracontractual") ||
+      (text.includes("cuantia") && text.includes("plo")) ||
+      (text.includes("cuantía") && text.includes("plo")) ||
+      (text.includes("300") && text.includes("plo"))
+    );
+  });
+
+  return preferred.length > 0 ? preferred : records;
 }
 
 function isCivilLiabilityRecord(record: Record<string, unknown>) {
@@ -1061,6 +1632,7 @@ function normalizeSubcoverages(value: unknown): CoverageSubamparo[] {
 
       return {
         nombre: name,
+        incluido: normalizeBoolean(record.incluido, true),
         porcentaje_sublimite: normalizeNumber(record.porcentaje_sublimite),
         valor_sublimite: normalizeNumber(record.valor_sublimite),
         origen:
@@ -1370,6 +1942,42 @@ async function insertExtractionLog({
   }
 }
 
+async function insertAmendmentExtractionLog({
+  contractId,
+  documentId,
+  extractedText,
+  result,
+  resultado,
+}: {
+  contractId: string;
+  documentId: string;
+  extractedText: string;
+  result: OpenAIAmendmentExtractionResult;
+  resultado: "exito" | "parcial";
+}) {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from("extracciones").insert({
+    contrato_id: contractId,
+    documento_id: documentId,
+    modelo: result.deployment,
+    version_prompt: PROMPT_VERSION,
+    texto_extraido: extractedText,
+    json_original: (result.rawJson ?? {}) as Json,
+    campos_no_encontrados: (result.extraction.campos_no_encontrados ??
+      []) as Json,
+    alertas: (result.extraction.alertas ?? []) as Json,
+    tokens_entrada: result.usage.promptTokens ?? 0,
+    tokens_salida: result.usage.completionTokens ?? 0,
+    costo_estimado: 0,
+    resultado,
+    mensaje_error: null,
+  });
+
+  if (error) {
+    console.error("Fallo al registrar la extracción del otrosí.", error.message);
+  }
+}
+
 async function insertErrorExtractionLog(
   context: ProcessingContext,
   message: string,
@@ -1522,6 +2130,27 @@ function logExtractionResultForDevelopment({
     campos_no_encontrados: result.extraction.campos_no_encontrados,
     alertas: result.extraction.alertas,
     garantias_detectadas: result.extraction.garantias.length,
+  });
+}
+
+function logAmendmentResultForDevelopment(
+  result: OpenAIAmendmentExtractionResult,
+) {
+  if (process.env.NODE_ENV !== "development") {
+    return;
+  }
+
+  console.info("[Azure OpenAI] amendment_result:", {
+    deployment: result.deployment,
+    resultado: getAmendmentExtractionLogResult(result.extraction),
+    numero_modificacion: result.extraction.numero_modificacion.valor,
+    tipo_modificacion: result.extraction.tipo_modificacion.valor,
+    valor_adicion: result.extraction.valor_adicion.valor,
+    valor_contrato_acumulado:
+      result.extraction.valor_contrato_acumulado.valor,
+    dias_prorroga: result.extraction.dias_prorroga.valor,
+    garantias_detectadas: result.extraction.garantias.length,
+    requiere_revision: result.extraction.requiere_revision,
   });
 }
 
