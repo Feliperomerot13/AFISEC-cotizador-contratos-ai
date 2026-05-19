@@ -6,12 +6,12 @@ import { DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
 
 const documentTypeLabels: Record<string, string> = {
   contrato_base: "Contrato base",
-  otrosi: "Otrosí",
+  otrosi: "Otrosí (futuro)",
   otro: "Otro",
 };
 
 type BaseContractOption = {
-  id: string;
+  id: string | number;
   numero_contrato: string | null;
   contratista: string | null;
   estado: string;
@@ -62,10 +62,20 @@ export function UploadForm() {
   }, []);
 
   const clientOptions = useMemo(() => {
-    const byNit = new Map<string, BaseContractOption["clientes"]>();
+    const byNit = new Map<
+      string,
+      BaseContractOption["clientes"] & { nit: string }
+    >();
 
     baseContracts.forEach((contract) => {
-      byNit.set(contract.clientes.nit, contract.clientes);
+      if (!contract.clientes.nit) {
+        return;
+      }
+
+      byNit.set(contract.clientes.nit, {
+        ...contract.clientes,
+        nit: contract.clientes.nit,
+      });
     });
 
     return Array.from(byNit.values()).sort((left, right) =>
@@ -81,7 +91,7 @@ export function UploadForm() {
     [baseContracts, selectedClientNit],
   );
   const selectedContract = baseContracts.find(
-    (contract) => contract.id === selectedContractId,
+    (contract) => String(contract.id) === selectedContractId,
   );
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -137,7 +147,7 @@ export function UploadForm() {
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-8">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
           Carga
         </p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
@@ -149,6 +159,13 @@ export function UploadForm() {
         onSubmit={onSubmit}
         className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
       >
+        {documentType === "otrosi" ? (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+            La carga de otrosí queda reservada para contratos con póliza base
+            emitida.
+          </div>
+        ) : null}
+
         <div className="grid gap-5 md:grid-cols-2">
           {documentType === "otrosi" ? (
             <>
@@ -183,7 +200,7 @@ export function UploadForm() {
                     setSelectedClientNit(event.target.value);
                     setSelectedContractId("");
                   }}
-                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 >
                   <option value="">Selecciona cliente</option>
                   {clientOptions.map((client) => (
@@ -201,11 +218,11 @@ export function UploadForm() {
                   required
                   value={selectedContractId}
                   onChange={(event) => setSelectedContractId(event.target.value)}
-                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 >
                   <option value="">Selecciona contrato</option>
                   {contractsForClient.map((contract) => (
-                    <option key={contract.id} value={contract.id}>
+                    <option key={contract.id} value={String(contract.id)}>
                       {contract.numero_contrato ?? "Sin número"} ·{" "}
                       {contract.contratista ?? "Sin contratista"}
                     </option>
@@ -222,7 +239,7 @@ export function UploadForm() {
                 <input
                   name="nombreCliente"
                   required
-                  className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 />
               </label>
 
@@ -231,7 +248,7 @@ export function UploadForm() {
                 <input
                   name="nitCliente"
                   required
-                  className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 />
               </label>
             </>
@@ -246,7 +263,7 @@ export function UploadForm() {
               name="ejecutivo"
               required
               defaultValue="Diana"
-              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               {EXECUTIVES.map((executive) => (
                 <option key={executive} value={executive}>
@@ -270,7 +287,7 @@ export function UploadForm() {
                 setSelectedClientNit("");
                 setSelectedContractId("");
               }}
-              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               {DOCUMENT_TYPES.map((type) => (
                 <option key={type} value={type}>
@@ -290,7 +307,7 @@ export function UploadForm() {
             type="file"
             accept="application/pdf,.pdf"
             required
-            className="block w-full rounded-lg border border-dashed border-neutral-300 bg-neutral-50 px-3 py-4 text-sm text-neutral-700 outline-none transition file:mr-4 file:rounded-lg file:border-0 file:bg-teal-700 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:bg-neutral-100 focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+            className="block w-full rounded-lg border border-dashed border-neutral-300 bg-neutral-50 px-3 py-4 text-sm text-neutral-700 outline-none transition file:mr-4 file:rounded-lg file:border-0 file:bg-[#d25b30] file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:bg-neutral-100 focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
           />
         </label>
 
@@ -310,7 +327,7 @@ export function UploadForm() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="inline-flex h-11 items-center justify-center rounded-lg bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+            className="inline-flex h-11 items-center justify-center rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
           >
             {isSubmitting ? "Procesando..." : "Cargar y procesar"}
           </button>

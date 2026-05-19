@@ -3,7 +3,7 @@ import { stateLabel } from "@/lib/format";
 const stateClasses: Record<string, string> = {
   cargado: "border-sky-200 bg-sky-50 text-sky-700",
   procesando: "border-indigo-200 bg-indigo-50 text-indigo-700",
-  procesado_ia: "border-teal-200 bg-teal-50 text-teal-700",
+  procesado_ia: "border-[#d25b30]/30 bg-[#d25b30]/5 text-[#d25b30]",
   pendiente_validacion: "border-amber-200 bg-amber-50 text-amber-800",
   validado: "border-emerald-200 bg-emerald-50 text-emerald-700",
   error: "border-rose-200 bg-rose-50 text-rose-700",

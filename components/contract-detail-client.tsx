@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  Fragment,
+  FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import {
   DEFAULT_COVERAGE_RATE,
   DEFAULT_IVA_PERCENTAGE,
@@ -16,6 +23,7 @@ import type {
   Amparo,
   Cliente,
   Contrato,
+  Cotizacion,
   Documento,
   TasaReferencia,
 } from "@/lib/database.types";
@@ -33,6 +41,12 @@ import {
   normalizeNumber as normalizeNumberValue,
   normalizeText as normalizeTextValue,
 } from "@/lib/normalizers";
+import {
+  formatCoverageName,
+  getQuoteSnapshot,
+  quoteStatusLabel,
+} from "@/lib/quotes";
+import type { QuoteSnapshot, QuoteSnapshotSubcoverage } from "@/lib/quotes";
 import type { AIExtraction } from "@/lib/schemas";
 import { ConfidenceBadge, StatusBadge } from "@/components/status-badge";
 
@@ -45,6 +59,7 @@ type DetailResponse = {
   amparos: Amparo[];
   tasasReferencia: TasaReferencia[];
   extraction: AIExtraction | null;
+  cotizaciones: Cotizacion[];
 };
 
 type ContractForm = {
@@ -136,6 +151,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const [validadoPor, setValidadoPor] = useState("Diana");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [quoteAction, setQuoteAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -297,6 +313,80 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     }
   }
 
+  async function runQuoteAction(
+    action: string,
+    request: () => Promise<Response>,
+    successMessage: string,
+  ) {
+    setQuoteAction(action);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await request();
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(body.error ?? "No se pudo completar la acción.");
+      }
+
+      setSuccess(successMessage);
+      await loadDetail();
+    } catch (quoteError) {
+      setError(
+        quoteError instanceof Error
+          ? quoteError.message
+          : "Ocurrió un error inesperado.",
+      );
+    } finally {
+      setQuoteAction(null);
+    }
+  }
+
+  async function onGenerateQuote() {
+    await runQuoteAction(
+      "generate",
+      () =>
+        fetch(`/api/contracts/${contractId}/quotes`, {
+          method: "POST",
+        }),
+      "Cotización generada correctamente.",
+    );
+  }
+
+  async function onEmitQuote(quoteId: string | number) {
+    await runQuoteAction(
+      `emit:${quoteId}`,
+      () =>
+        fetch(`/api/quotes/${quoteId}/emit`, {
+          method: "POST",
+        }),
+      "Póliza base emitida correctamente.",
+    );
+  }
+
+  async function onRevertQuote(quoteId: string | number) {
+    const reason = window.prompt(
+      "Motivo de reversión o anulación",
+      "Reversión operativa de emisión",
+    );
+
+    if (reason === null) {
+      return;
+    }
+
+    await runQuoteAction(
+      `revert:${quoteId}`,
+      () =>
+        fetch(`/api/quotes/${quoteId}/revert`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ motivo: reason }),
+        }),
+      "Emisión revertida correctamente.",
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500 shadow-sm">
@@ -313,11 +403,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     );
   }
 
+  const quotes = detail.cotizaciones ?? [];
+  const activeIssuedQuote =
+    quotes.find((quote) => quote.estado === "emitida") ?? null;
+  const isIssuedLocked = Boolean(activeIssuedQuote);
+  const canGenerateQuote =
+    detail.contract.estado === "validado" && !isIssuedLocked;
+
   return (
     <form onSubmit={onValidate} className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
             Revisión
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
@@ -359,6 +456,28 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         </div>
       ) : null}
 
+      <QuotePanel
+        quotes={quotes}
+        activeIssuedQuote={activeIssuedQuote}
+        contractState={detail.contract.estado}
+        canGenerateQuote={canGenerateQuote}
+        quoteAction={quoteAction}
+        onGenerateQuote={onGenerateQuote}
+        onEmitQuote={onEmitQuote}
+        onRevertQuote={onRevertQuote}
+      />
+
+      {activeIssuedQuote ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+          La póliza base emitida bloquea la edición directa de datos, amparos,
+          tasas, primas y validación. El historial y el PDF siguen disponibles.
+        </div>
+      ) : null}
+
+      <fieldset
+        disabled={isIssuedLocked}
+        className="space-y-6 disabled:opacity-70"
+      >
       <section className="grid gap-6 lg:grid-cols-[1fr_0.45fr]">
         <div className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
           <h2 className="text-lg font-semibold text-neutral-950">
@@ -378,7 +497,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                 onChange={(event) =>
                   updateForm(setForm, "tipo_contrato", event.target.value)
                 }
-                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
               >
                 <option value="">Sin dato</option>
                 <option value="estatal">Estatal</option>
@@ -417,7 +536,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                     event.target.value,
                   )
                 }
-                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
               >
                 <option value="si">Sí</option>
                 <option value="no">No</option>
@@ -487,7 +606,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               value={form.objeto}
               onChange={(event) => updateForm(setForm, "objeto", event.target.value)}
               rows={4}
-              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             />
             <SourceBlock source={ai?.objeto} />
           </label>
@@ -499,10 +618,14 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             <dl className="mt-5 space-y-4 text-sm">
               <Metadata label="Archivo" value={firstDocument.nombre_archivo} />
               <Metadata label="Tipo" value={firstDocument.tipo_documento} />
-              <Metadata label="MIME" value={firstDocument.mime_type} />
+              <Metadata label="MIME" value={firstDocument.mime_type ?? "Sin dato"} />
               <Metadata
                 label="Tamaño"
-                value={`${Math.round(firstDocument.size_bytes / 1024)} KB`}
+                value={
+                  firstDocument.size_bytes === null
+                    ? "Sin dato"
+                    : `${Math.round(firstDocument.size_bytes / 1024)} KB`
+                }
               />
               <Metadata label="Cargado" value={formatDate(firstDocument.fecha_carga)} />
             </dl>
@@ -616,7 +739,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         onChange={(event) =>
                           updateAmparo(index, "confianza", event.target.value)
                         }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                       >
                         <option value="">Sin dato</option>
                         <option value="alta">alta</option>
@@ -633,7 +756,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         onChange={(event) =>
                           updateAmparo(index, "tipo_vigencia", event.target.value)
                         }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                       >
                         <option value="">Sin dato</option>
                         <option value="contractual">Contractual</option>
@@ -649,7 +772,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         onChange={(event) =>
                           updateAmparo(index, "base_vigencia", event.target.value)
                         }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                       >
                         <option value="">Sin dato</option>
                         <option value="fecha_inicio_contrato">
@@ -698,7 +821,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                           updateAmparo(index, "fuente_texto", event.target.value)
                         }
                         rows={3}
-                        className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                        className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                       />
                     </label>
                     <button
@@ -838,7 +961,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         updateAmparo(index, "motivo_revision", event.target.value)
                       }
                       rows={2}
-                      className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                      className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                     />
                   </label>
 
@@ -859,7 +982,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                             event.target.checked,
                           )
                         }
-                        className="h-4 w-4 rounded border-neutral-300 text-teal-700 focus:ring-teal-600"
+                        className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
                       />
                       Requiere revisión
                     </label>
@@ -881,7 +1004,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             <select
               value={validadoPor}
               onChange={(event) => setValidadoPor(event.target.value)}
-              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100 md:w-72"
+              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 md:w-72"
             >
               {EXECUTIVES.map((executive) => (
                 <option key={executive} value={executive}>
@@ -892,13 +1015,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           </label>
           <button
             type="submit"
-            disabled={isSaving || detail.contract.estado === "procesando"}
-            className="h-11 rounded-lg bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+            disabled={isSaving || detail.contract.estado === "procesando" || isIssuedLocked}
+            className="h-11 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
           >
-            {isSaving ? "Guardando..." : "Confirmar validación"}
+            {isIssuedLocked
+              ? "Póliza emitida"
+              : isSaving
+                ? "Guardando..."
+                : "Confirmar validación"}
           </button>
         </div>
       </section>
+      </fieldset>
     </form>
   );
 
@@ -919,6 +1047,452 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
       ),
     );
   }
+}
+
+function QuotePanel({
+  quotes,
+  activeIssuedQuote,
+  contractState,
+  canGenerateQuote,
+  quoteAction,
+  onGenerateQuote,
+  onEmitQuote,
+  onRevertQuote,
+}: {
+  quotes: Cotizacion[];
+  activeIssuedQuote: Cotizacion | null;
+  contractState: string;
+  canGenerateQuote: boolean;
+  quoteAction: string | null;
+  onGenerateQuote: () => void;
+  onEmitQuote: (quoteId: string | number) => void;
+  onRevertQuote: (quoteId: string | number) => void;
+}) {
+  const activeSnapshot = activeIssuedQuote
+    ? getQuoteSnapshot(activeIssuedQuote)
+    : null;
+  const referenceQuote = activeIssuedQuote ?? quotes[0] ?? null;
+  const referenceSnapshot = referenceQuote
+    ? getQuoteSnapshot(referenceQuote)
+    : null;
+
+  return (
+    <section className="rounded-lg border border-[#d25b30]/20 bg-white p-6 shadow-sm">
+      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
+            AFISEC
+          </p>
+          <h2 className="mt-2 text-lg font-semibold text-neutral-950">
+            Cotizaciones y emisión
+          </h2>
+          <p className="mt-2 text-sm text-neutral-500">
+            Historial versionado y póliza base emitida.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onGenerateQuote}
+          disabled={!canGenerateQuote || quoteAction !== null}
+          className="h-11 rounded-lg bg-[#d25b30] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+        >
+          {quoteAction === "generate"
+            ? "Generando..."
+            : contractState !== "validado"
+              ? "Validación requerida"
+              : activeIssuedQuote
+                ? "Póliza emitida"
+                : "Generar cotización PDF"}
+        </button>
+      </div>
+
+      {activeIssuedQuote ? (
+        <IssuedPolicySummary quote={activeIssuedQuote} snapshot={activeSnapshot} />
+      ) : null}
+
+      <QuotesHistoryTable
+        quotes={quotes}
+        activeIssuedQuote={activeIssuedQuote}
+        quoteAction={quoteAction}
+        onEmitQuote={onEmitQuote}
+        onRevertQuote={onRevertQuote}
+      />
+
+      {referenceQuote && referenceSnapshot ? (
+        <QuoteCoverageTable
+          quote={referenceQuote}
+          snapshot={referenceSnapshot}
+          title={
+            activeIssuedQuote
+              ? "Amparos de la póliza emitida"
+              : "Amparos de la última cotización"
+          }
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function QuotesHistoryTable({
+  quotes,
+  activeIssuedQuote,
+  quoteAction,
+  onEmitQuote,
+  onRevertQuote,
+}: {
+  quotes: Cotizacion[];
+  activeIssuedQuote: Cotizacion | null;
+  quoteAction: string | null;
+  onEmitQuote: (quoteId: string | number) => void;
+  onRevertQuote: (quoteId: string | number) => void;
+}) {
+  if (quotes.length === 0) {
+    return (
+      <p className="mt-5 rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-4 text-sm text-neutral-500">
+        Aún no hay cotizaciones generadas para este contrato.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-5 overflow-x-auto rounded-lg border border-neutral-200">
+      <table className="min-w-[860px] w-full border-collapse text-left text-sm">
+        <thead className="bg-neutral-50 text-xs font-semibold uppercase tracking-[0.08em] text-neutral-500">
+          <tr>
+            <th className="border-b border-neutral-200 px-3 py-2">Cotización</th>
+            <th className="border-b border-neutral-200 px-3 py-2">Versión</th>
+            <th className="border-b border-neutral-200 px-3 py-2">Estado</th>
+            <th className="border-b border-neutral-200 px-3 py-2">Generada</th>
+            <th className="border-b border-neutral-200 px-3 py-2">Emitida</th>
+            <th className="border-b border-neutral-200 px-3 py-2 text-right">Total</th>
+            <th className="border-b border-neutral-200 px-3 py-2 text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100 bg-white">
+          {quotes.map((quote) => {
+            const snapshot = getQuoteSnapshot(quote);
+            const currency = snapshot?.contrato.moneda ?? "COP";
+
+            return (
+              <tr key={quote.id}>
+                <td className="px-3 py-3 font-semibold text-neutral-950">
+                  {quote.numero_cotizacion}
+                </td>
+                <td className="px-3 py-3 text-neutral-700">v{quote.version}</td>
+                <td className="px-3 py-3">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-semibold ${quoteStatusClass(quote.estado)}`}
+                  >
+                    {quoteStatusLabel(quote.estado)}
+                  </span>
+                </td>
+                <td className="px-3 py-3 text-neutral-700">
+                  {formatDate(quote.fecha_generacion)}
+                </td>
+                <td className="px-3 py-3 text-neutral-700">
+                  {quote.fecha_emision
+                    ? formatDate(quote.fecha_emision)
+                    : quote.fecha_reversion
+                      ? `Revertida ${formatDate(quote.fecha_reversion)}`
+                      : "Sin emitir"}
+                </td>
+                <td className="px-3 py-3 text-right font-semibold text-neutral-950">
+                  {formatCurrency(quote.total_prima, currency)}
+                </td>
+                <td className="px-3 py-3">
+                  <div className="flex justify-end gap-2">
+                    <a
+                      href={`/api/quotes/${quote.id}/download`}
+                      className="inline-flex h-9 items-center rounded-lg border border-neutral-300 bg-white px-3 text-xs font-semibold text-neutral-800 transition hover:bg-neutral-100"
+                    >
+                      PDF
+                    </a>
+                    {quote.estado === "generada" ? (
+                      <button
+                        type="button"
+                        onClick={() => onEmitQuote(quote.id)}
+                        disabled={activeIssuedQuote !== null || quoteAction !== null}
+                        className="h-9 rounded-lg bg-neutral-950 px-3 text-xs font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+                      >
+                        {activeIssuedQuote
+                          ? "Emisión activa"
+                          : quoteAction === `emit:${quote.id}`
+                            ? "Emitiendo"
+                            : "Emitir"}
+                      </button>
+                    ) : null}
+                    {quote.estado === "emitida" ? (
+                      <button
+                        type="button"
+                        onClick={() => onRevertQuote(quote.id)}
+                        disabled={quoteAction !== null}
+                        className="h-9 rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-400"
+                      >
+                        {quoteAction === `revert:${quote.id}` ? "Revirtiendo" : "Revertir"}
+                      </button>
+                    ) : null}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function IssuedPolicySummary({
+  quote,
+  snapshot,
+}: {
+  quote: Cotizacion;
+  snapshot: QuoteSnapshot | null;
+}) {
+  const currency = snapshot?.contrato.moneda ?? "COP";
+  const rceSubcoverages = snapshot ? getCivilLiabilitySubcoverages(snapshot) : [];
+
+  return (
+    <div className="mt-5 overflow-x-auto rounded-lg border border-emerald-200 bg-emerald-50">
+      <table className="min-w-[760px] w-full border-collapse text-left text-sm">
+        <caption className="bg-emerald-50 px-3 py-2 text-left text-sm font-semibold text-emerald-900">
+          Póliza base emitida
+        </caption>
+        <tbody className="bg-white">
+          <tr>
+            <TableLabel>Cotización</TableLabel>
+            <TableValue>{quote.numero_cotizacion}</TableValue>
+            <TableLabel>Versión</TableLabel>
+            <TableValue>v{quote.version}</TableValue>
+            <TableLabel>Fecha emisión</TableLabel>
+            <TableValue>{formatDate(quote.fecha_emision)}</TableValue>
+          </tr>
+          <tr>
+            <TableLabel>Cliente</TableLabel>
+            <TableValue>{snapshot?.cliente.nombre ?? "Sin dato"}</TableValue>
+            <TableLabel>Contrato / orden</TableLabel>
+            <TableValue>
+              {snapshot?.contrato.numero_contrato ?? "Sin número"}
+            </TableValue>
+            <TableLabel>Total</TableLabel>
+            <TableValue>
+              {formatCurrency(
+                snapshot?.totales.prima_total ?? quote.total_prima,
+                currency,
+              )}
+            </TableValue>
+          </tr>
+          <tr>
+            <TableLabel>Contratante</TableLabel>
+            <TableValue>
+              {snapshot?.contrato.contratante ?? "Sin dato"}
+            </TableValue>
+            <TableLabel>Contratista</TableLabel>
+            <TableValue>
+              {snapshot?.contrato.contratista ?? "Sin dato"}
+            </TableValue>
+            <TableLabel>Amparos</TableLabel>
+            <TableValue>{String(snapshot?.amparos.length ?? 0)}</TableValue>
+          </tr>
+          {rceSubcoverages.length > 0 ? (
+            <tr>
+              <TableLabel>Subamparos RCE</TableLabel>
+              <td
+                colSpan={5}
+                className="border border-emerald-100 px-3 py-2 text-neutral-800"
+              >
+                {formatSubcoveragesForUi(rceSubcoverages, currency)}
+                <span className="ml-2 text-neutral-500">
+                  Sin prima individual; la prima corresponde a la línea principal
+                  RCE/PLO.
+                </span>
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function QuoteCoverageTable({
+  quote,
+  snapshot,
+  title,
+}: {
+  quote: Cotizacion;
+  snapshot: QuoteSnapshot;
+  title: string;
+}) {
+  const currency = snapshot.contrato.moneda;
+
+  return (
+    <div className="mt-5 overflow-x-auto rounded-lg border border-neutral-200">
+      <table className="min-w-[980px] w-full border-collapse text-left text-sm">
+        <caption className="bg-neutral-50 px-3 py-2 text-left text-sm font-semibold text-neutral-950">
+          {title}: {quote.numero_cotizacion} v{quote.version}
+        </caption>
+        <thead className="bg-neutral-50 text-xs font-semibold uppercase tracking-[0.08em] text-neutral-500">
+          <tr>
+            <th className="border-y border-neutral-200 px-3 py-2">Amparo</th>
+            <th className="border-y border-neutral-200 px-3 py-2 text-right">Valor asegurado</th>
+            <th className="border-y border-neutral-200 px-3 py-2">Desde</th>
+            <th className="border-y border-neutral-200 px-3 py-2">Hasta</th>
+            <th className="border-y border-neutral-200 px-3 py-2 text-right">Días</th>
+            <th className="border-y border-neutral-200 px-3 py-2 text-right">Prima neta</th>
+            <th className="border-y border-neutral-200 px-3 py-2 text-right">IVA</th>
+            <th className="border-y border-neutral-200 px-3 py-2 text-right">Prima total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100 bg-white">
+          {snapshot.amparos.length === 0 ? (
+            <tr>
+              <td colSpan={8} className="px-3 py-4 text-sm text-neutral-500">
+                No hay amparos cotizados.
+              </td>
+            </tr>
+          ) : (
+            snapshot.amparos.map((amparo, index) => {
+              const subcoverages = getIncludedSubcoverages(amparo.subamparos);
+              const showRceDetail =
+                isCivilLiabilityCoverage(amparo.tipo_amparo) &&
+                subcoverages.length > 0;
+
+              return (
+                <Fragment key={`${amparo.tipo_amparo}-${index}`}>
+                  <tr>
+                    <td className="px-3 py-3 font-medium text-neutral-950">
+                      {formatCoverageName(amparo.tipo_amparo)}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      {formatCurrency(amparo.valor_asegurado, currency)}
+                    </td>
+                    <td className="px-3 py-3">{formatDate(amparo.fecha_desde)}</td>
+                    <td className="px-3 py-3">{formatDate(amparo.fecha_hasta)}</td>
+                    <td className="px-3 py-3 text-right">
+                      {amparo.dias_vigencia ?? "Sin dato"}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      {formatCurrency(amparo.prima_neta, currency)}
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      {formatCurrency(amparo.iva, currency)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold text-neutral-950">
+                      {formatCurrency(amparo.prima_total, currency)}
+                    </td>
+                  </tr>
+                  {showRceDetail ? (
+                    <tr className="bg-neutral-50">
+                      <td
+                        colSpan={8}
+                        className="px-3 py-2 text-xs leading-5 text-neutral-600"
+                      >
+                        <span className="font-semibold text-neutral-800">
+                          Subamparos incluidos:
+                        </span>{" "}
+                        {formatSubcoveragesForUi(subcoverages, currency)}
+                        <span className="ml-2">
+                          Sin prima individual; la prima corresponde a la línea
+                          principal RCE/PLO.
+                        </span>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              );
+            })
+          )}
+        </tbody>
+        <tfoot className="bg-neutral-50 text-sm font-semibold text-neutral-950">
+          <tr>
+            <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
+              Totales
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(snapshot.totales.prima_neta, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(snapshot.totales.iva, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right text-[#d25b30]">
+              {formatCurrency(snapshot.totales.prima_total, currency)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function getCivilLiabilitySubcoverages(snapshot: QuoteSnapshot) {
+  return snapshot.amparos.flatMap((amparo) =>
+    isCivilLiabilityCoverage(amparo.tipo_amparo)
+      ? getIncludedSubcoverages(amparo.subamparos)
+      : [],
+  );
+}
+
+function getIncludedSubcoverages(
+  subcoverages: QuoteSnapshotSubcoverage[] | undefined,
+) {
+  return Array.isArray(subcoverages)
+    ? subcoverages.filter((subcoverage) => subcoverage.incluido)
+    : [];
+}
+
+function isCivilLiabilityCoverage(value: string) {
+  const normalized = normalizeText(value.replace(/_/g, " "));
+
+  return (
+    normalized.includes("responsabilidad civil") ||
+    normalized.includes("extracontractual") ||
+    normalized.includes("plo")
+  );
+}
+
+function formatSubcoveragesForUi(
+  subcoverages: QuoteSnapshotSubcoverage[],
+  currency: string,
+) {
+  return subcoverages
+    .map((subcoverage) => {
+      const sublimit =
+        subcoverage.valor_sublimite === null
+          ? ""
+          : ` (${formatCurrency(subcoverage.valor_sublimite, currency)})`;
+
+      return `${subcoverage.nombre}${sublimit}`;
+    })
+    .join("; ");
+}
+
+function TableLabel({ children }: { children: ReactNode }) {
+  return (
+    <th className="border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-emerald-800">
+      {children}
+    </th>
+  );
+}
+
+function TableValue({ children }: { children: ReactNode }) {
+  return (
+    <td className="border border-emerald-100 px-3 py-2 font-semibold text-neutral-950">
+      {children}
+    </td>
+  );
+}
+
+function quoteStatusClass(status: string) {
+  if (status === "emitida") {
+    return "bg-emerald-100 text-emerald-800";
+  }
+
+  if (status === "emision_revertida" || status === "anulada") {
+    return "bg-amber-100 text-amber-800";
+  }
+
+  return "bg-sky-100 text-sky-800";
 }
 
 function EditableField({
@@ -945,7 +1519,7 @@ function EditableField({
         inputMode={inputMode}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+        className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
       />
       <SourceBlock source={source} />
     </label>
@@ -974,7 +1548,7 @@ function EditableAmparoField({
         inputMode={inputMode}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
       />
     </label>
   );
@@ -1015,7 +1589,7 @@ function ManualDateOverride({
           type="checkbox"
           checked={checked}
           onChange={(event) => onCheckedChange(event.target.checked)}
-          className="h-4 w-4 rounded border-neutral-300 text-teal-700 focus:ring-teal-600"
+          className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
         />
         {checkboxLabel}
       </label>
@@ -1032,7 +1606,7 @@ function ManualDateOverride({
             type="date"
             value={value}
             onChange={(event) => onValueChange(event.target.value)}
-            className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+            className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
           />
         </label>
       ) : null}
@@ -1086,7 +1660,7 @@ function SubcoverageEditor({
                   onChange={(event) =>
                     updateSubamparo(index, { incluido: event.target.checked })
                   }
-                  className="h-4 w-4 rounded border-neutral-300 text-teal-700 focus:ring-teal-600"
+                  className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
                 />
                 <span className="font-semibold text-neutral-900">
                   {subamparo.nombre}
@@ -1096,7 +1670,7 @@ function SubcoverageEditor({
                 <span
                   className={
                     subamparo.calculable
-                      ? "rounded-full bg-teal-100 px-2 py-0.5 font-semibold text-teal-800"
+                      ? "rounded-full bg-[#d25b30]/10 px-2 py-0.5 font-semibold text-[#8f3e21]"
                       : "rounded-full bg-neutral-200 px-2 py-0.5 font-semibold text-neutral-700"
                   }
                 >
@@ -1134,7 +1708,7 @@ function SubcoverageEditor({
                     });
                   }}
                   disabled={subamparo.calculable}
-                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 />
               </label>
               <label className="space-y-1">
@@ -1151,7 +1725,7 @@ function SubcoverageEditor({
                     })
                   }
                   disabled={subamparo.calculable}
-                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 />
               </label>
             </div>

@@ -7,7 +7,7 @@ import { formatCurrency, formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 
 type ContractListRecord = {
-  id: string;
+  id: string | number;
   numero_contrato: string | null;
   valor_contrato: number | null;
   moneda: string;
@@ -18,7 +18,7 @@ type ContractListRecord = {
   creado_en: string;
   clientes: {
     nombre: string;
-    nit: string;
+    nit: string | null;
     ejecutivo: string;
   };
 };
@@ -102,7 +102,7 @@ export function ContractsList() {
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
             Consulta
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
@@ -111,7 +111,7 @@ export function ContractsList() {
         </div>
         <Link
           href="/upload"
-          className="inline-flex h-11 items-center justify-center rounded-lg bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+          className="inline-flex h-11 items-center justify-center rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28]"
         >
           Cargar contrato
         </Link>
@@ -127,7 +127,7 @@ export function ContractsList() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Cliente, NIT, contrato o contratista"
-              className="h-10 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="h-10 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             />
           </label>
 
@@ -138,7 +138,7 @@ export function ContractsList() {
             <select
               value={executive}
               onChange={(event) => setExecutive(event.target.value)}
-              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               <option value="todos">Todas</option>
               {EXECUTIVES.map((item) => (
@@ -156,7 +156,7 @@ export function ContractsList() {
             <select
               value={state}
               onChange={(event) => setState(event.target.value)}
-              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-100"
+              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               <option value="todos">Todos</option>
               {CONTRACT_STATES.map((item) => (
@@ -172,7 +172,7 @@ export function ContractsList() {
               type="checkbox"
               checked={expiring}
               onChange={(event) => setExpiring(event.target.checked)}
-              className="h-4 w-4 rounded border-neutral-300 text-teal-700 focus:ring-teal-600"
+              className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
             />
             Vencen en 30 días
           </label>

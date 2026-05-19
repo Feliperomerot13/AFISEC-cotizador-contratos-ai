@@ -12,7 +12,46 @@ type IdContext = {
 export async function POST(_request: Request, { params }: IdContext) {
   try {
     const { id } = await params;
-    const { error } = await getSupabaseAdmin()
+    const supabase = getSupabaseAdmin();
+    const { data: otrosiDocument, error: otrosiDocumentError } = await supabase
+      .from("documentos")
+      .select("id")
+      .eq("contrato_id", id)
+      .eq("tipo_documento", "otrosi")
+      .order("fecha_carga", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (otrosiDocumentError) {
+      throw new Error(
+        `No se pudo validar el tipo de documento: ${otrosiDocumentError.message}`,
+      );
+    }
+
+    if (otrosiDocument) {
+      const { data: activeIssuedQuote, error: activeIssuedQuoteError } =
+        await supabase
+          .from("cotizaciones")
+          .select("id")
+          .eq("contrato_id", id)
+          .eq("estado", "emitida")
+          .maybeSingle();
+
+      if (activeIssuedQuoteError) {
+        throw new Error(
+          `Fallo al validar póliza emitida: ${activeIssuedQuoteError.message}`,
+        );
+      }
+
+      if (!activeIssuedQuote) {
+        return jsonError(
+          "Los otrosíes estarán disponibles cuando exista una póliza base emitida.",
+          409,
+        );
+      }
+    }
+
+    const { error } = await supabase
       .from("contratos")
       .update({
         estado: "procesando",

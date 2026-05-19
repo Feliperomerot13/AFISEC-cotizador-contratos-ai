@@ -1,21 +1,21 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type DashboardStats = {
   total: number;
   pendingValidation: number;
-  errors: number;
-  upcomingExpirations: number;
-  expirationWindowDays: number;
+  quotesGenerated: number;
+  issuedPolicies: number;
 };
 
 const statStyles = [
   "border-neutral-200 bg-white",
-  "border-orange-200 bg-orange-50",
+  "border-[#d25b30]/30 bg-[#d25b30]/5",
   "border-rose-200 bg-rose-50",
-  "border-teal-200 bg-teal-50",
+  "border-neutral-200 bg-neutral-50",
 ];
 
 export function DashboardClient() {
@@ -52,34 +52,39 @@ export function DashboardClient() {
   }, []);
 
   const cards = [
-    { label: "Contratos", value: stats?.total },
+    { label: "Contratos cargados", value: stats?.total },
     { label: "Por validar", value: stats?.pendingValidation },
-    { label: "Errores", value: stats?.errors },
-    { label: "Vencen pronto", value: stats?.upcomingExpirations },
+    { label: "Cotizaciones generadas", value: stats?.quotesGenerated },
+    { label: "Pólizas emitidas", value: stats?.issuedPolicies },
   ];
 
   return (
     <div className="space-y-8">
       <section className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
         <div className="rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#008C7A]">
-            AFISEC
-          </p>
+          <Image
+            src="/brand/Logo_Color_Afisec_cuadrado.png"
+            alt="AFISEC"
+            width={68}
+            height={80}
+            className="h-16 w-auto"
+            priority
+          />
           <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-neutral-950">
             AFISEC | Gestión de cotizaciones contractuales
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-neutral-600">
-            Prelectura asistida de contratos para cotización de garantías.
+            Centraliza la revisión de contratos, la validación de amparos y la
+            generación de cotizaciones para pólizas de cumplimiento.
           </p>
           <p className="mt-3 max-w-2xl text-base leading-7 text-neutral-600">
-            Carga contratos en PDF, revisa la información extraída, valida los
-            amparos y prepara la información necesaria para cotizar con mayor
-            trazabilidad.
+            Gestiona el flujo completo desde la carga documental hasta la
+            cotización versionada y la emisión de la póliza base.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
               href="/upload"
-              className="inline-flex h-11 items-center justify-center rounded-lg bg-[#F58220] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#d96f19]"
+              className="inline-flex h-11 items-center justify-center rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28]"
             >
               Cargar contrato
             </Link>
@@ -92,17 +97,17 @@ export function DashboardClient() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-neutral-200 bg-[#111111] p-8 text-white shadow-sm">
-          <p className="text-sm font-medium text-orange-200">
-            Flujo de revisión comercial
+        <div className="rounded-lg border border-neutral-200 bg-neutral-950 p-8 text-white shadow-sm">
+          <p className="text-sm font-medium text-[#f0c5b6]">
+            Flujo comercial AFISEC
           </p>
           <p className="mt-4 text-2xl font-semibold leading-tight">
-            El equipo comercial valida la lectura antes de generar la
-            cotización.
+            Del contrato a la cotización validada.
           </p>
           <p className="mt-4 text-sm leading-6 text-neutral-300">
-            La información queda organizada para revisar datos contractuales,
-            amparos, vigencias y primas con evidencia trazable.
+            Carga contratos u órdenes, revisa la información extraída, valida
+            amparos y genera cotizaciones versionadas antes de emitir la póliza
+            base.
           </p>
         </div>
       </section>

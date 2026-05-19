@@ -6,7 +6,7 @@ import { getSupabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  let createdContractId: string | null = null;
+  let createdContractId: string | number | null = null;
 
   try {
     const formData = await request.formData();
@@ -49,11 +49,32 @@ export async function POST(request: Request) {
         );
       }
 
+      const { data: activeIssuedQuote, error: activeIssuedQuoteError } =
+        await supabase
+          .from("cotizaciones")
+          .select("id")
+          .eq("contrato_id", input.contratoBaseId)
+          .eq("estado", "emitida")
+          .maybeSingle();
+
+      if (activeIssuedQuoteError) {
+        throw new Error(
+          `Fallo al validar póliza emitida: ${activeIssuedQuoteError.message}`,
+        );
+      }
+
+      if (!activeIssuedQuote) {
+        return jsonError(
+          "Los otrosíes estarán disponibles cuando exista una póliza base emitida.",
+          409,
+        );
+      }
+
       const baseContractRecord = baseContract as unknown as {
-        id: string;
+        id: string | number;
         clientes:
-          | { id: string; nombre: string; nit: string; ejecutivo: string }
-          | Array<{ id: string; nombre: string; nit: string; ejecutivo: string }>;
+          | { id: string | number; nombre: string; nit: string | null; ejecutivo: string }
+          | Array<{ id: string | number; nombre: string; nit: string | null; ejecutivo: string }>;
       };
       const cliente = Array.isArray(baseContractRecord.clientes)
         ? baseContractRecord.clientes[0]

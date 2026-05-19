@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
 
@@ -18,11 +19,16 @@ export default function RootLayout({
         <header className="border-b border-neutral-200 bg-white">
           <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
             <Link href="/" className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F58220] text-sm font-bold text-white">
-                AF
-              </span>
+              <Image
+                src="/brand/Logo_Color_Afisec_cuadrado.png"
+                alt="AFISEC"
+                width={40}
+                height={47}
+                className="h-10 w-auto"
+                priority
+              />
               <span>
-                <span className="block text-sm font-semibold uppercase tracking-[0.18em] text-neutral-500">
+                <span className="block text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
                   AFISEC
                 </span>
                 <span className="block text-lg font-semibold text-neutral-950">
@@ -33,19 +39,19 @@ export default function RootLayout({
             <nav className="flex flex-wrap gap-2 text-sm font-semibold">
               <Link
                 href="/"
-                className="rounded-lg px-3 py-2 text-neutral-700 transition hover:bg-neutral-100 hover:text-neutral-950"
+                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
               >
                 Inicio
               </Link>
               <Link
                 href="/upload"
-                className="rounded-lg px-3 py-2 text-neutral-700 transition hover:bg-neutral-100 hover:text-neutral-950"
+                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
               >
                 Cargar
               </Link>
               <Link
                 href="/contratos"
-                className="rounded-lg px-3 py-2 text-neutral-700 transition hover:bg-neutral-100 hover:text-neutral-950"
+                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
               >
                 Contratos
               </Link>

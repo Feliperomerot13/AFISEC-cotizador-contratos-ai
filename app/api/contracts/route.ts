@@ -7,7 +7,7 @@ import { normalizeText } from "@/lib/format";
 export const runtime = "nodejs";
 
 type ContractListRecord = {
-  id: string;
+  id: string | number;
   numero_contrato: string | null;
   objeto: string | null;
   tipo_contrato: string | null;
@@ -23,9 +23,9 @@ type ContractListRecord = {
   fecha_validacion: string | null;
   creado_en: string;
   clientes: {
-    id: string;
+    id: string | number;
     nombre: string;
-    nit: string;
+    nit: string | null;
     ejecutivo: string;
   };
 };

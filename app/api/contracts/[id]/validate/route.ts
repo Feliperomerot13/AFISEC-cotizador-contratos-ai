@@ -17,6 +17,27 @@ export async function PUT(request: Request, { params }: IdContext) {
     const supabase = getSupabaseAdmin();
     const now = new Date().toISOString();
 
+    const { data: activeIssuedQuote, error: activeIssuedQuoteError } =
+      await supabase
+        .from("cotizaciones")
+        .select("id,numero_cotizacion,version")
+        .eq("contrato_id", id)
+        .eq("estado", "emitida")
+        .maybeSingle();
+
+    if (activeIssuedQuoteError) {
+      throw new Error(
+        `Fallo al validar emisión activa: ${activeIssuedQuoteError.message}`,
+      );
+    }
+
+    if (activeIssuedQuote) {
+      return jsonError(
+        `La póliza base emitida (${activeIssuedQuote.numero_cotizacion} v${activeIssuedQuote.version}) bloquea la edición directa. Revierte o anula la emisión antes de validar cambios.`,
+        409,
+      );
+    }
+
     const { error: updateError } = await supabase
       .from("contratos")
       .update({

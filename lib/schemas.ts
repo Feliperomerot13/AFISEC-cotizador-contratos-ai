@@ -236,7 +236,7 @@ export const uploadFormSchema = z.object({
   nitCliente: requiredTrimmedString(3, "El NIT del cliente es obligatorio."),
   ejecutivo: z.enum(EXECUTIVES),
   tipoDocumento: z.enum(DOCUMENT_TYPES),
-  contratoBaseId: z.string().uuid().optional(),
+  contratoBaseId: z.string().regex(/^\d+$/).optional(),
 });
 
 export const validateContractSchema = z.object({

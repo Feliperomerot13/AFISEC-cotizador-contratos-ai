@@ -30,6 +30,7 @@ export async function GET(_request: Request, { params }: IdContext) {
       { data: documents, error: documentsError },
       { data: amparos, error: amparosError },
       { data: latestExtraction, error: latestExtractionError },
+      { data: cotizaciones, error: cotizacionesError },
     ] = await Promise.all([
       supabase
         .from("documentos")
@@ -51,6 +52,11 @@ export async function GET(_request: Request, { params }: IdContext) {
         .order("fecha_extraccion", { ascending: false })
         .limit(1)
         .maybeSingle(),
+      supabase
+        .from("cotizaciones")
+        .select("*")
+        .eq("contrato_id", id)
+        .order("version", { ascending: false }),
     ]);
 
     if (documentsError) {
@@ -64,6 +70,12 @@ export async function GET(_request: Request, { params }: IdContext) {
     if (latestExtractionError) {
       throw new Error(
         `Fallo al consultar la extracción: ${latestExtractionError.message}`,
+      );
+    }
+
+    if (cotizacionesError) {
+      throw new Error(
+        `Fallo al consultar cotizaciones: ${cotizacionesError.message}`,
       );
     }
 
@@ -103,6 +115,7 @@ export async function GET(_request: Request, { params }: IdContext) {
       amparos: amparos ?? [],
       tasasReferencia: relevantRates,
       extraction: latestExtraction?.json_original ?? null,
+      cotizaciones: cotizaciones ?? [],
     });
   } catch (error) {
     return jsonError(getErrorMessage(error));

@@ -1,4 +1,3 @@
-import { EXPIRATION_WINDOW_DAYS } from "@/lib/constants";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
@@ -7,14 +6,8 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const supabase = getSupabaseAdmin();
-    const today = new Date();
-    const expirationLimit = new Date(today);
-    expirationLimit.setDate(today.getDate() + EXPIRATION_WINDOW_DAYS);
 
-    const todayIso = today.toISOString().slice(0, 10);
-    const limitIso = expirationLimit.toISOString().slice(0, 10);
-
-    const [total, pending, errors, upcoming] = await Promise.all([
+    const [total, pending, quotes, issuedPolicies] = await Promise.all([
       supabase
         .from("contratos")
         .select("id", { count: "exact", head: true }),
@@ -23,18 +16,17 @@ export async function GET() {
         .select("id", { count: "exact", head: true })
         .eq("estado", "pendiente_validacion"),
       supabase
-        .from("contratos")
+        .from("cotizaciones")
         .select("id", { count: "exact", head: true })
-        .eq("estado", "error"),
+        .in("estado", ["generada", "emitida", "emision_revertida", "anulada"]),
       supabase
-        .from("contratos")
+        .from("cotizaciones")
         .select("id", { count: "exact", head: true })
-        .gte("fecha_fin", todayIso)
-        .lte("fecha_fin", limitIso),
+        .eq("estado", "emitida"),
     ]);
 
     const firstError =
-      total.error ?? pending.error ?? errors.error ?? upcoming.error;
+      total.error ?? pending.error ?? quotes.error ?? issuedPolicies.error;
 
     if (firstError) {
       throw new Error(`Fallo al consultar indicadores: ${firstError.message}`);
@@ -43,9 +35,8 @@ export async function GET() {
     return jsonOk({
       total: total.count ?? 0,
       pendingValidation: pending.count ?? 0,
-      errors: errors.count ?? 0,
-      upcomingExpirations: upcoming.count ?? 0,
-      expirationWindowDays: EXPIRATION_WINDOW_DAYS,
+      quotesGenerated: quotes.count ?? 0,
+      issuedPolicies: issuedPolicies.count ?? 0,
     });
   } catch (error) {
     return jsonError(getErrorMessage(error));

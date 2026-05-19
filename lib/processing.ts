@@ -33,13 +33,14 @@ import type { AIExtraction, AmendmentExtraction } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 type ProcessingContext = {
-  contratoId: string;
-  documentoId: string | null;
+  contratoId: DbInt8;
+  documentoId: DbInt8 | null;
   textoExtraido: string | null;
 };
 
 type ContractUpdate = Database["public"]["Tables"]["contratos"]["Update"];
 type CoverageInsert = Database["public"]["Tables"]["amparos"]["Insert"];
+type DbInt8 = Database["public"]["Tables"]["contratos"]["Row"]["id"];
 
 type NormalizationReport = {
   corrected: string[];
@@ -73,7 +74,7 @@ const COVERAGE_VALIDITY_BASES = [
 const MIN_DOCUMENT_INTELLIGENCE_PAGE_COVERAGE_RATIO = 0.7;
 const MAX_TOLERATED_MISSING_PAGES = 2;
 
-export async function processContract(contratoId: string) {
+export async function processContract(contratoId: DbInt8) {
   const context: ProcessingContext = {
     contratoId,
     documentoId: null,
@@ -267,7 +268,7 @@ export async function processContract(contratoId: string) {
 }
 
 async function saveStructuredExtraction(
-  contratoId: string,
+  contratoId: DbInt8,
   extraction: AIExtraction,
 ) {
   const supabase = getSupabaseAdmin();
@@ -328,8 +329,8 @@ async function processAmendmentExtraction({
   openAiContext,
   deployment,
 }: {
-  contratoId: string;
-  documentoId: string;
+  contratoId: DbInt8;
+  documentoId: DbInt8;
   extractedText: string;
   openAiContext: string;
   deployment: string;
@@ -453,8 +454,8 @@ export function mapExtractionToContractUpdate(extraction: unknown): ContractUpda
 export function mapExtractionToCoverageRows(
   extraction: unknown,
   contract: {
-    contratoId: string;
-    modificacionId?: string | null;
+    contratoId: DbInt8;
+    modificacionId?: DbInt8 | null;
     valorContrato: unknown;
     baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
@@ -467,8 +468,8 @@ export function mapExtractionToCoverageRows(
 function mapExtractionToCoverageMapping(
   extraction: unknown,
   contract: {
-    contratoId: string;
-    modificacionId?: string | null;
+    contratoId: DbInt8;
+    modificacionId?: DbInt8 | null;
     valorContrato: unknown;
     baseCalculoAmparos?: unknown;
     fechaInicio: unknown;
@@ -717,8 +718,8 @@ function getAmendmentExtractionLogResult(
 
 function mapAmendmentToModification(
   extraction: AmendmentExtraction,
-  contratoId: string,
-  documentoId: string,
+  contratoId: DbInt8,
+  documentoId: DbInt8,
 ): Database["public"]["Tables"]["modificaciones_contractuales"]["Insert"] {
   const reviewReasons = [
     extraction.motivo_revision,
@@ -1913,8 +1914,8 @@ async function insertExtractionLog({
   result,
   resultado,
 }: {
-  contractId: string;
-  documentId: string;
+  contractId: DbInt8;
+  documentId: DbInt8;
   extractedText: string;
   result: OpenAIExtractionResult;
   resultado: "exito" | "parcial";
@@ -1949,8 +1950,8 @@ async function insertAmendmentExtractionLog({
   result,
   resultado,
 }: {
-  contractId: string;
-  documentId: string;
+  contractId: DbInt8;
+  documentId: DbInt8;
   extractedText: string;
   result: OpenAIAmendmentExtractionResult;
   resultado: "exito" | "parcial";
@@ -2010,7 +2011,7 @@ async function insertErrorExtractionLog(
   }
 }
 
-async function markContractAsError(contratoId: string, message: string) {
+async function markContractAsError(contratoId: DbInt8, message: string) {
   await updateContractOrThrow(contratoId, {
     estado: "error",
     mensaje_error: message,
@@ -2019,7 +2020,7 @@ async function markContractAsError(contratoId: string, message: string) {
 }
 
 async function updateContractOrThrow(
-  contratoId: string,
+  contratoId: DbInt8,
   update: Database["public"]["Tables"]["contratos"]["Update"],
 ) {
   const supabase = getSupabaseAdmin();
