@@ -77,6 +77,14 @@ export type AmendmentLiquidation = {
   alertas: string[];
 };
 
+export type AmendmentTotalsBlock = {
+  prima_valor_adicionado: number;
+  prima_prorroga: number;
+  prima_neta: number;
+  iva: number;
+  prima_total: number;
+};
+
 export type AmendmentActiveCoverage = {
   tipo_amparo: string;
   porcentaje: number | null;
@@ -425,6 +433,39 @@ export function calculateAmendmentLiquidation({
       ),
     },
     alertas,
+  };
+}
+
+export function calculateAmendmentTotalsByBlock(
+  rows: AmendmentLiquidationRow[],
+) {
+  const civilLiabilityRows = rows.filter(
+    (row) => row.es_rce || isCivilLiabilityCoverage(row.tipo_amparo),
+  );
+  const guaranteeRows = rows.filter(
+    (row) => !civilLiabilityRows.includes(row),
+  );
+
+  return {
+    garantias: calculateAmendmentGroupTotals(guaranteeRows),
+    responsabilidad_civil: calculateAmendmentGroupTotals(civilLiabilityRows),
+    general: calculateAmendmentGroupTotals(rows),
+  };
+}
+
+function calculateAmendmentGroupTotals(
+  rows: AmendmentLiquidationRow[],
+): AmendmentTotalsBlock {
+  return {
+    prima_valor_adicionado: roundMoney(
+      rows.reduce((total, row) => total + row.prima_valor_adicionado, 0),
+    ),
+    prima_prorroga: roundMoney(
+      rows.reduce((total, row) => total + row.prima_prorroga, 0),
+    ),
+    prima_neta: roundMoney(rows.reduce((total, row) => total + row.prima_neta, 0)),
+    iva: roundMoney(rows.reduce((total, row) => total + row.iva, 0)),
+    prima_total: roundMoney(rows.reduce((total, row) => total + row.prima_total, 0)),
   };
 }
 

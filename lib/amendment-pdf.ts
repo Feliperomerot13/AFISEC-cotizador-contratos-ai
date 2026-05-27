@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
-import type {
-  AmendmentLiquidationRow,
-  AmendmentQuoteSnapshot,
+import {
+  calculateAmendmentTotalsByBlock,
+  type AmendmentLiquidationRow,
+  type AmendmentQuoteSnapshot,
 } from "@/lib/amendments";
 
 type PdfPage = {
@@ -327,56 +328,54 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
   }
 
   function addTotals() {
-    ensureSpace(86);
+    ensureSpace(104);
     addSectionTitle("Totales");
+    const totalsByBlock = calculateAmendmentTotalsByBlock(
+      snapshot.liquidacion.rows,
+    );
+    const rows: Array<[string, ReturnType<typeof calculateAmendmentTotalsByBlock>["general"]]> = [
+      ["Total garantías / cumplimiento", totalsByBlock.garantias],
+      ["Total responsabilidad civil", totalsByBlock.responsabilidad_civil],
+      ["Total general del otrosí", totalsByBlock.general],
+    ];
+
     addTableRows(
       [
         [
-          { text: "Prima por valor adicionado", width: 168, bold: true, fill: TABLE_HEADER },
+          { text: "Bloque", width: 150, bold: true, fill: TABLE_HEADER },
+          { text: "Prima adición", width: 84, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: "Prima prórroga", width: 88, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: "IVA", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: "Total", width: 86, bold: true, fill: TABLE_HEADER, align: "right" },
+        ],
+        ...rows.map(([label, totals]): PdfTableCell[] => [
+          { text: label, width: 150, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(
-              snapshot.liquidacion.totales.prima_valor_adicionado,
-              snapshot.contrato.moneda,
-            ),
-            width: 130,
+            text: formatMoney(totals.prima_valor_adicionado, snapshot.contrato.moneda),
+            width: 84,
             align: "right",
           },
-        ],
-        [
-          { text: "Prima por prórroga", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(
-              snapshot.liquidacion.totales.prima_prorroga,
-              snapshot.contrato.moneda,
-            ),
-            width: 130,
+            text: formatMoney(totals.prima_prorroga, snapshot.contrato.moneda),
+            width: 88,
             align: "right",
           },
-        ],
-        [
-          { text: "IVA", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(snapshot.liquidacion.totales.iva, snapshot.contrato.moneda),
-            width: 130,
+            text: formatMoney(totals.iva, snapshot.contrato.moneda),
+            width: 70,
             align: "right",
           },
-        ],
-        [
-          { text: "Total ajuste", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(
-              snapshot.liquidacion.totales.prima_total,
-              snapshot.contrato.moneda,
-            ),
-            width: 130,
+            text: formatMoney(totals.prima_total, snapshot.contrato.moneda),
+            width: 86,
             align: "right",
             bold: true,
-            color: AFISEC_PRIMARY,
+            color: label.includes("general") ? AFISEC_PRIMARY : undefined,
           },
-        ],
+        ]),
       ],
       {
-        x: PAGE_WIDTH - MARGIN_X - 298,
+        x: PAGE_WIDTH - MARGIN_X - 478,
         fontSize: 7.4,
         lineHeight: 9,
         minHeight: 18,

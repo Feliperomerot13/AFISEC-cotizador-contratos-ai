@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { calculateAmendmentLiquidation } from "../lib/amendments.ts";
+import {
+  calculateAmendmentLiquidation,
+  calculateAmendmentTotalsByBlock,
+} from "../lib/amendments.ts";
 import { normalizeCoverage } from "../lib/coverage-calculations.ts";
 import { formatDate } from "../lib/format.ts";
 import {
@@ -10,8 +13,12 @@ import {
   normalizeEnum,
   normalizeNumber,
 } from "../lib/normalizers.ts";
-import { applyDeterministicAmendmentFallbacksForTest } from "../lib/processing.ts";
-import { amendmentExtractionSchema } from "../lib/schemas.ts";
+import {
+  applyDeterministicAmendmentFallbacksForTest,
+  applyDeterministicContractFallbacksForTest,
+  mapExtractionToContractUpdate,
+} from "../lib/processing.ts";
+import { aiExtractionSchema, amendmentExtractionSchema } from "../lib/schemas.ts";
 
 assert.equal(normalizeCurrency(null), "COP");
 assert.equal(normalizeCurrency("$"), "COP");
@@ -37,6 +44,64 @@ assert.equal(normalizeNumber("$ 1.200.000.000"), 1200000000);
 assert.equal(normalizeNumber("1,200,000,000"), 1200000000);
 assert.equal(normalizeNumber("número inválido"), null);
 assert.match(formatDate("2026-12-25"), /25/);
+
+const monthlyContractUpdate = mapExtractionToContractUpdate(
+  buildContractExtraction({
+    valor_contrato: {
+      valor_numerico: 56100000,
+      moneda: "COP",
+      confianza: "media",
+      pagina: 3,
+      fuente: "Valor mensual de $56.100.000.",
+    },
+    valor_unitario_periodico: sourcedNumber(56100000),
+    periodicidad_valor: sourcedValue("mensual"),
+    numero_periodos: sourcedInteger(12),
+    explicacion_calculo_valor: sourcedValue(
+      "Valor mensual de $56.100.000 por doce meses.",
+    ),
+  }),
+);
+assert.equal(monthlyContractUpdate.valor_contrato, 673200000);
+assert.equal(monthlyContractUpdate.base_calculo_amparos, 673200000);
+
+const monthlyContractFallback = applyDeterministicContractFallbacksForTest(
+  buildContractExtraction({
+    valor_contrato: {
+      valor_numerico: 56100000,
+      moneda: "COP",
+      confianza: "media",
+      pagina: 3,
+      fuente: "Valor mensual de $56.100.000.",
+    },
+  }),
+  [
+    "--- Página 1 ---",
+    "El valor mensual del servicio será de $56.100.000.",
+    "La duración del contrato será de doce meses.",
+  ].join("\n"),
+);
+assert.equal(monthlyContractFallback.valor_contrato.valor_numerico, 673200000);
+assert.equal(monthlyContractFallback.numero_periodos.valor, 12);
+
+const actaInicioFallback = applyDeterministicContractFallbacksForTest(
+  buildContractExtraction({
+    fecha_inicio: sourcedDate(null),
+    fecha_fin: sourcedDate(null),
+    plazo: sourcedValue(null),
+  }),
+  [
+    "--- Página 1 ---",
+    "El contrato se suscribe el 15 de enero de 2026.",
+    "El plazo de ejecución será de doscientos cuarenta (240) días contados a partir de la suscripción del Acta de Inicio.",
+  ].join("\n"),
+);
+assert.equal(actaInicioFallback.fecha_inicio.valor, "2026-01-15");
+assert.equal(actaInicioFallback.fecha_fin.valor, "2026-09-12");
+assert.match(
+  actaInicioFallback.alertas.join(" "),
+  /Acta de Inicio.*fecha de firma\/perfeccionamiento/,
+);
 
 const amendmentOneExtraction = applyDeterministicAmendmentFallbacksForTest(
   buildAmendmentExtraction(),
@@ -180,6 +245,57 @@ assert.equal(amendmentThreePayroll?.dias_vigencia_adicion, 1582);
 assert.equal(amendmentThreeRce?.valor_asegurado_adicion, 0);
 assert.equal(amendmentThreeRce?.prima_valor_adicionado, 0);
 assert.equal(amendmentThreeRce?.prima_prorroga, 417808.22);
+const amendmentThreeTotalsByBlock = calculateAmendmentTotalsByBlock(
+  amendmentThreeLiquidation.rows,
+);
+assert.equal(
+  amendmentThreeTotalsByBlock.general.prima_total,
+  amendmentThreeLiquidation.totales.prima_total,
+);
+assert.equal(
+  amendmentThreeTotalsByBlock.responsabilidad_civil.prima_valor_adicionado,
+  0,
+);
+assert.equal(
+  amendmentThreeTotalsByBlock.responsabilidad_civil.prima_total,
+  amendmentThreeRce?.prima_total,
+);
+assert.ok(amendmentThreeTotalsByBlock.garantias.prima_total > 0);
+
+const onlyExtensionExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  "Otrosí de prórroga sin adición de valor. El plazo se prorroga desde el 02 de febrero de 2025 hasta el 02 de marzo de 2025.",
+);
+assert.equal(
+  onlyExtensionExtraction.tipo_modificacion.valor,
+  "Prórroga de plazo sin adición de valor",
+);
+assert.equal(onlyExtensionExtraction.valor_adicion.valor, 0);
+
+const onlyAdditionExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  "Otrosí de adición. Se adiciona al contrato el valor de $203.093.584.",
+);
+assert.equal(onlyAdditionExtraction.tipo_modificacion.valor, "Adición de valor");
+assert.equal(onlyAdditionExtraction.valor_adicion.valor, 203093584);
+
+const additionAndExtensionExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  "Otrosí de adición y prórroga. Se adiciona al contrato el valor de $203.093.584. El plazo se prorroga desde el 02 de marzo de 2025 hasta el 02 de abril de 2025.",
+);
+assert.equal(
+  additionAndExtensionExtraction.tipo_modificacion.valor,
+  "Adición de valor + prórroga de plazo",
+);
+
+const objectOnlyExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  "Otrosí para modificar el objeto contractual sin impacto económico.",
+);
+assert.equal(
+  objectOnlyExtraction.tipo_modificacion.valor,
+  "Cambio de objeto sin impacto asegurable",
+);
 
 const serviceQualityCoverage = normalizeCoverage(
   {
@@ -279,11 +395,41 @@ const contractualStartBaseCoverage = normalizeCoverage(
   },
 );
 
-assert.equal(contractualStartBaseCoverage.base_vigencia, "fecha_inicio_contrato");
+assert.equal(contractualStartBaseCoverage.base_vigencia, "fecha_fin_contrato");
 assert.equal(contractualStartBaseCoverage.fecha_desde, "2024-02-02");
 assert.equal(contractualStartBaseCoverage.fecha_hasta, "2025-03-04");
 assert.equal(contractualStartBaseCoverage.dias_adicionales, 30);
 assert.equal(contractualStartBaseCoverage.dias_vigencia, 396);
+
+const misclassifiedContractualCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "post_contractual",
+    base_vigencia: "fecha_inicio_contrato",
+    dias_adicionales: null,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto:
+      "Vigencia igual al término de vigencia del contrato y tres (3) meses más.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(misclassifiedContractualCoverage.tipo_vigencia, "contractual");
+assert.equal(misclassifiedContractualCoverage.base_vigencia, "fecha_fin_contrato");
+assert.equal(misclassifiedContractualCoverage.fecha_desde, "2024-02-02");
+assert.equal(misclassifiedContractualCoverage.fecha_hasta, "2025-05-03");
+assert.equal(misclassifiedContractualCoverage.dias_adicionales, 90);
 
 const contractualQualityStartBaseCoverage = normalizeCoverage(
   {
@@ -854,6 +1000,53 @@ function sourcedBoolean(valor = null) {
     pagina: null,
     fuente: null,
   };
+}
+
+function buildContractExtraction(overrides = {}) {
+  return aiExtractionSchema.parse({
+    numero_contrato: sourcedValue("004 DE 2024"),
+    tipo_contrato: {
+      valor: "estatal",
+      confianza: "media",
+      pagina: null,
+      fuente: null,
+    },
+    contratante: {
+      nombre: "Contratante",
+      nit: null,
+      confianza: "media",
+      pagina: null,
+      fuente: null,
+    },
+    contratista: {
+      nombre: "Contratista",
+      nit: null,
+      confianza: "media",
+      pagina: null,
+      fuente: null,
+    },
+    objeto: sourcedValue("Servicio"),
+    valor_contrato: {
+      valor_numerico: 1000,
+      moneda: "COP",
+      confianza: "media",
+      pagina: null,
+      fuente: null,
+    },
+    valor_contrato_total: sourcedNumber(null),
+    valor_unitario_periodico: sourcedNumber(null),
+    periodicidad_valor: sourcedValue(null),
+    numero_periodos: sourcedInteger(null),
+    explicacion_calculo_valor: sourcedValue(null),
+    requiere_revision_valor: sourcedBoolean(null),
+    fecha_inicio: sourcedDate("2024-01-01"),
+    fecha_fin: sourcedDate("2024-12-31"),
+    plazo: sourcedValue("12 meses"),
+    garantias: [],
+    campos_no_encontrados: [],
+    alertas: [],
+    ...overrides,
+  });
 }
 
 function buildAmendmentExtraction(overrides = {}) {

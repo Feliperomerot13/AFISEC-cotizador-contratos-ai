@@ -140,6 +140,42 @@ export const aiExtractionSchema = z
         fuente: sourceSchema,
       })
       .strict(),
+    valor_contrato_total: sourcedNumberSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    valor_unitario_periodico: sourcedNumberSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    periodicidad_valor: sourcedValueSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    numero_periodos: sourcedIntegerSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    explicacion_calculo_valor: sourcedValueSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    requiere_revision_valor: sourcedBooleanSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
     fecha_inicio: z
       .object({
         valor: dateSchema,

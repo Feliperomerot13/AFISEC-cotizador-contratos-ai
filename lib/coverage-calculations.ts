@@ -94,15 +94,16 @@ export function normalizeCoverage(
   const explicitEndDate = normalizeDate(coverage.fecha_hasta);
   const manualStartDateEnabled = Boolean(coverage.fecha_desde_manual);
   const manualEndDateEnabled = Boolean(coverage.fecha_hasta_manual);
+  const validityAdjustedCoverage = normalizeContractualTermCoverageInput(coverage);
   const isRce = isCivilLiabilityCoverage(
-    coverage.tipo_amparo,
-    coverage.fuente_texto,
+    validityAdjustedCoverage.tipo_amparo,
+    validityAdjustedCoverage.fuente_texto,
   );
   const preparedCoverage = isRce
-    ? normalizeCivilLiabilityInput(coverage)
-    : isAdvancePaymentCoverage(coverage)
-      ? normalizeAdvancePaymentCoverageInput(coverage, contract)
-    : coverage;
+    ? normalizeCivilLiabilityInput(validityAdjustedCoverage)
+    : isAdvancePaymentCoverage(validityAdjustedCoverage)
+      ? normalizeAdvancePaymentCoverageInput(validityAdjustedCoverage, contract)
+    : validityAdjustedCoverage;
   const valueCalculation = calculateInsuredValue(
     preparedCoverage,
     contract,
@@ -371,6 +372,28 @@ function normalizeCivilLiabilityInput(
     dias_adicionales: normalizeNumber(coverage.dias_adicionales) ?? 30,
     fecha_desde: null,
     fecha_hasta: null,
+  };
+}
+
+function normalizeContractualTermCoverageInput(
+  coverage: CoverageInput,
+): CoverageInput {
+  if (!isContractualTermPlusAdditionalCoverage(coverage)) {
+    return coverage;
+  }
+
+  const additionalDays =
+    normalizeNumber(coverage.dias_adicionales) ??
+    extractPostContractualDays(coverage.fuente_texto);
+  const baseVigencia = coverageTextIncludes(coverage, ["acta de recibo final"])
+    ? "acta_recibo_final"
+    : "fecha_fin_contrato";
+
+  return {
+    ...coverage,
+    tipo_vigencia: "contractual",
+    base_vigencia: baseVigencia,
+    dias_adicionales: additionalDays,
   };
 }
 
@@ -1062,18 +1085,31 @@ function extractPostContractualDays(source: string | null | undefined) {
     return null;
   }
 
-  const numericDays = normalized.match(/(\d+)\s*dias?/);
+  const numericDays =
+    normalized.match(/\((\d+)\)\s*dias?/) ??
+    normalized.match(/(\d+)\s*dias?/);
 
   if (numericDays) {
     const days = normalizeNumber(numericDays[1]);
     return days === null ? null : Math.trunc(days);
   }
 
-  const numericYears = normalized.match(/(\d+)\s*anos?/);
+  const numericYears =
+    normalized.match(/\((\d+)\)\s*anos?/) ??
+    normalized.match(/(\d+)\s*anos?/);
 
   if (numericYears) {
     const years = normalizeNumber(numericYears[1]);
     return years === null ? null : Math.trunc(years * 365);
+  }
+
+  const numericMonths =
+    normalized.match(/\((\d+)\)\s*mes(?:es)?/) ??
+    normalized.match(/(\d+)\s*mes(?:es)?/);
+
+  if (numericMonths) {
+    const months = normalizeNumber(numericMonths[1]);
+    return months === null ? null : Math.trunc(months * 30);
   }
 
   if (
@@ -1086,6 +1122,10 @@ function extractPostContractualDays(source: string | null | undefined) {
 
   if (normalized.includes("tres anos") || normalized.includes("tres (3) anos")) {
     return 1095;
+  }
+
+  if (normalized.includes("tres meses") || normalized.includes("tres (3) meses")) {
+    return 90;
   }
 
   return null;
@@ -1236,8 +1276,41 @@ function isServiceQualityCoverage(coverage: CoverageInput) {
   ]);
 }
 
+function isContractualTermPlusAdditionalCoverage(coverage: CoverageInput) {
+  const text = normalizeBaseValue(
+    `${coverage.tipo_amparo ?? ""} ${coverage.fuente_texto ?? ""}`,
+  );
+
+  if (!text) {
+    return false;
+  }
+
+  const mentionsFullContractTerm =
+    text.includes("vigencia igual al termino") ||
+    text.includes("vigencia igual al plazo") ||
+    text.includes("vigencia igual a la duracion") ||
+    text.includes("vigencia igual a la duración") ||
+    text.includes("plazo de ejecucion") ||
+    text.includes("plazo de ejecución") ||
+    text.includes("termino de vigencia del contrato") ||
+    text.includes("término de vigencia del contrato") ||
+    text.includes("duracion del contrato") ||
+    text.includes("duración del contrato");
+  const mentionsAdditionalPeriod =
+    text.includes(" mas") ||
+    text.includes(" más") ||
+    text.includes("adicional") ||
+    /\+\s*\d+/.test(text);
+
+  return mentionsFullContractTerm && mentionsAdditionalPeriod;
+}
+
 function isClosureBasedPostContractualCoverage(coverage: CoverageInput) {
   if (isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) {
+    return false;
+  }
+
+  if (isContractualTermPlusAdditionalCoverage(coverage)) {
     return false;
   }
 

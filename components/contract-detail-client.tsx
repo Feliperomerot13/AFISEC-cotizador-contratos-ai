@@ -571,7 +571,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               label="Valor del contrato"
               type="text"
               inputMode="decimal"
-              value={formatInputNumber(numberOrNull(form.valor_contrato))}
+              value={form.valor_contrato}
               onChange={(value) => updateForm(setForm, "valor_contrato", value)}
               source={ai?.valor_contrato}
             />
@@ -579,7 +579,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               label="Base de cálculo para amparos"
               type="text"
               inputMode="decimal"
-              value={formatInputNumber(numberOrNull(form.base_calculo_amparos))}
+              value={form.base_calculo_amparos}
               onChange={(value) =>
                 updateForm(setForm, "base_calculo_amparos", value)
               }
@@ -813,7 +813,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       label="Valor asegurado"
                       type="text"
                       inputMode="decimal"
-                      value={formatInputNumber(calculation.valor_asegurado)}
+                      value={amparo.valor_asegurado}
                       onChange={(value) =>
                         updateAmparo(index, "valor_asegurado", value)
                       }
@@ -823,7 +823,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         label="Base/valor anticipo"
                         type="text"
                         inputMode="decimal"
-                        value={formatInputNumber(numberOrNull(amparo.valor_base_calculo))}
+                        value={amparo.valor_base_calculo}
                         onChange={(value) =>
                           updateAmparo(index, "valor_base_calculo", value)
                         }
@@ -890,7 +890,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       label="Cuantía fija"
                       type="text"
                       inputMode="decimal"
-                      value={formatInputNumber(numberOrNull(amparo.cuantia_fija))}
+                      value={amparo.cuantia_fija}
                       onChange={(value) => updateAmparo(index, "cuantia_fija", value)}
                     />
                     <EditableAmparoField
@@ -2084,7 +2084,11 @@ function SubcoverageEditor({
                 <input
                   type="text"
                   inputMode="decimal"
-                  value={formatInputNumber(subamparo.valor_sublimite)}
+                  value={
+                    subamparo.valor_sublimite === null
+                      ? ""
+                      : String(subamparo.valor_sublimite)
+                  }
                   onChange={(event) =>
                     updateSubamparo(index, {
                       valor_sublimite: numberOrNull(event.target.value),
@@ -2942,18 +2946,6 @@ function isCivilLiabilityType(value: string) {
     normalized.includes("plo") ||
     normalized.includes("predios")
   );
-}
-
-function formatInputNumber(value: number | null | undefined) {
-  if (value === null || typeof value === "undefined" || !Number.isFinite(value)) {
-    return "";
-  }
-
-  return new Intl.NumberFormat("es-CO", {
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-    useGrouping: true,
-  }).format(value);
 }
 
 function formatPercent(value: number | null | undefined) {

@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 import {
   amendmentQuoteStatusLabel,
   amendmentStatusLabel,
+  calculateAmendmentTotalsByBlock,
   getAmendmentQuoteSnapshot,
   jsonToLiquidation,
   normalizeCoverageKey,
@@ -415,7 +416,7 @@ export function AmendmentsPanel({
                   </label>
                   <AmendmentField
                     label="Fecha firma"
-                    type="date"
+                    asDate
                     value={form.fecha_firma}
                     disabled={isEmitted}
                     onChange={(value) =>
@@ -425,7 +426,7 @@ export function AmendmentsPanel({
                   <AmendmentField
                     label="Valor anterior"
                     inputMode="decimal"
-                    value={formatInputNumber(form.valor_contrato_anterior)}
+                    value={form.valor_contrato_anterior}
                     disabled={isEmitted}
                     onChange={(value) =>
                       updateForm(modification.id, "valor_contrato_anterior", value)
@@ -434,7 +435,7 @@ export function AmendmentsPanel({
                   <AmendmentField
                     label="Valor adicionado"
                     inputMode="decimal"
-                    value={formatInputNumber(form.valor_adicion)}
+                    value={form.valor_adicion}
                     disabled={isEmitted}
                     onChange={(value) =>
                       updateForm(modification.id, "valor_adicion", value)
@@ -443,7 +444,7 @@ export function AmendmentsPanel({
                   <AmendmentField
                     label="Valor acumulado"
                     inputMode="decimal"
-                    value={formatInputNumber(form.valor_contrato_acumulado)}
+                    value={form.valor_contrato_acumulado}
                     disabled={isEmitted}
                     onChange={(value) =>
                       updateForm(modification.id, "valor_contrato_acumulado", value)
@@ -451,7 +452,7 @@ export function AmendmentsPanel({
                   />
                   <AmendmentField
                     label="Fecha fin anterior"
-                    type="date"
+                    asDate
                     value={form.fecha_desde}
                     disabled={isEmitted}
                     onChange={(value) =>
@@ -460,7 +461,7 @@ export function AmendmentsPanel({
                   />
                   <AmendmentField
                     label="Nueva fecha fin"
-                    type="date"
+                    asDate
                     value={form.fecha_hasta}
                     disabled={isEmitted}
                     onChange={(value) =>
@@ -527,6 +528,8 @@ export function AmendmentsPanel({
                       className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 disabled:bg-neutral-100"
                     />
                   </label>
+
+                  <AmendmentReviewSources modification={modification} />
 
                   {liquidation && liquidation.rows.length > 0 ? (
                     <div className="rounded-lg border border-neutral-200 bg-white p-3 md:col-span-3">
@@ -729,6 +732,12 @@ function LiquidationTable({
     ...basePolicyIssues,
     ...getVisibleLiquidationAlerts(liquidation.alertas),
   ];
+  const totalsByBlock = calculateAmendmentTotalsByBlock(liquidation.rows);
+  const totalRows = [
+    ["Total garantías / cumplimiento", totalsByBlock.garantias],
+    ["Total responsabilidad civil", totalsByBlock.responsabilidad_civil],
+    ["Total general del otrosí", totalsByBlock.general],
+  ] as const;
 
   return (
     <div className="mt-5 overflow-x-auto rounded-lg border border-neutral-200 bg-white">
@@ -792,23 +801,25 @@ function LiquidationTable({
           ))}
         </tbody>
         <tfoot className="bg-neutral-50 font-semibold text-neutral-950">
-          <tr>
-            <td colSpan={6} className="border-t border-neutral-200 px-3 py-2 text-right">
-              Totales
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(liquidation.totales.prima_valor_adicionado)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(liquidation.totales.prima_prorroga)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(liquidation.totales.iva)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right text-[#d25b30]">
-              {formatCurrency(liquidation.totales.prima_total)}
-            </td>
-          </tr>
+          {totalRows.map(([label, totals]) => (
+            <tr key={label}>
+              <td colSpan={6} className="border-t border-neutral-200 px-3 py-2 text-right">
+                {label}
+              </td>
+              <td className="border-t border-neutral-200 px-3 py-2 text-right">
+                {formatCurrency(totals.prima_valor_adicionado)}
+              </td>
+              <td className="border-t border-neutral-200 px-3 py-2 text-right">
+                {formatCurrency(totals.prima_prorroga)}
+              </td>
+              <td className="border-t border-neutral-200 px-3 py-2 text-right">
+                {formatCurrency(totals.iva)}
+              </td>
+              <td className={`border-t border-neutral-200 px-3 py-2 text-right ${label.includes("general") ? "text-[#d25b30]" : ""}`}>
+                {formatCurrency(totals.prima_total)}
+              </td>
+            </tr>
+          ))}
         </tfoot>
       </table>
       {visibleAlerts.length > 0 ? (
@@ -947,6 +958,7 @@ function AmendmentField({
   disabled,
   type = "text",
   inputMode,
+  asDate = false,
 }: {
   label: string;
   value: string;
@@ -954,7 +966,28 @@ function AmendmentField({
   disabled: boolean;
   type?: "text" | "number" | "date";
   inputMode?: "decimal";
+  asDate?: boolean;
 }) {
+  if (asDate) {
+    return (
+      <label className="space-y-2">
+        <span className="text-sm font-medium text-neutral-700">{label}</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="DD/MM/YYYY"
+          value={formatDateInputValue(value)}
+          disabled={disabled}
+          onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
+          className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 disabled:bg-neutral-100"
+        />
+        <span className="block text-xs leading-5 text-neutral-500">
+          Formato DD/MM/YYYY.
+        </span>
+      </label>
+    );
+  }
+
   return (
     <label className="space-y-2">
       <span className="text-sm font-medium text-neutral-700">{label}</span>
@@ -968,6 +1001,90 @@ function AmendmentField({
       />
     </label>
   );
+}
+
+function AmendmentReviewSources({
+  modification,
+}: {
+  modification: ModificacionContractual;
+}) {
+  const rows = buildAmendmentSourceRows(modification);
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-3 md:col-span-3">
+      <p className="text-sm font-semibold text-neutral-950">
+        Fuentes y ayudas de revisión
+      </p>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {rows.map((row) => (
+          <div
+            key={row.label}
+            className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-xs leading-5 text-neutral-600"
+          >
+            <p className="font-semibold text-neutral-800">{row.label}</p>
+            <p className="mt-1 whitespace-pre-wrap">{row.text}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function buildAmendmentSourceRows(modification: ModificacionContractual) {
+  const sources = [
+    modification.fuente_texto,
+    modification.motivo_revision,
+    ...jsonStrings(modification.alertas),
+    ...jsonStrings(modification.campos_no_encontrados),
+  ].filter((item): item is string => Boolean(item));
+  const fallback = modification.fuente_texto ?? sources[0] ?? null;
+  const definitions: Array<{ label: string; markers: string[] }> = [
+    {
+      label: "Valor adicionado",
+      markers: ["valor adicionado", "valor unitario", "periodo", "adicion"],
+    },
+    { label: "Valor anterior", markers: ["valor anterior", "estado vigente"] },
+    { label: "Valor acumulado", markers: ["valor acumulado"] },
+    { label: "Fecha firma", markers: ["fecha_firma", "fecha de firma", "firma"] },
+    {
+      label: "Fecha fin anterior",
+      markers: ["fecha fin anterior", "estado vigente", "fecha_desde"],
+    },
+    {
+      label: "Nueva fecha fin",
+      markers: ["nueva fecha", "fecha_hasta", "prorroga"],
+    },
+    { label: "Días de prórroga", markers: ["dias", "días", "prorroga"] },
+    { label: "Objeto / ajuste", markers: ["objeto", "grua", "ajuste"] },
+    { label: "Cláusula de garantías", markers: ["garantia", "garantias", "poliza"] },
+    { label: "Impuesto de timbre", markers: ["impuesto de timbre", "timbre"] },
+    { label: "Observaciones relevantes", markers: ["alerta", "revision", "revisión"] },
+  ];
+
+  return definitions
+    .map((definition) => {
+      const text =
+        sources.find((source) => textIncludesAny(source, definition.markers)) ??
+        (definition.label === "Observaciones relevantes" ? sources.join(" ") : fallback);
+
+      return text
+        ? {
+            label: definition.label,
+            text: text.slice(0, 520),
+          }
+        : null;
+    })
+    .filter((row): row is { label: string; text: string } => row !== null);
+}
+
+function textIncludesAny(value: string, markers: string[]) {
+  const normalized = normalizeForAmendmentSearch(value);
+
+  return markers.some((marker) => normalized.includes(normalizeForAmendmentSearch(marker)));
 }
 
 function modificationToForm(
@@ -1394,17 +1511,65 @@ function integerOrNull(value: string) {
   return parsed === null ? null : Math.round(parsed);
 }
 
-function formatInputNumber(value: string) {
-  const parsed = numberOrNull(value);
-
-  if (parsed === null) {
-    return value;
+function formatDateInputValue(value: string) {
+  if (!value) {
+    return "";
   }
 
-  return new Intl.NumberFormat("es-CO", {
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  }).format(parsed);
+  const normalized = normalizeDateString(value);
+
+  if (normalized) {
+    const [year, month, day] = normalized.split("-");
+
+    return `${day}/${month}/${year}`;
+  }
+
+  return maskDateInput(value);
+}
+
+function normalizeDateInputChange(value: string) {
+  const masked = maskDateInput(value);
+  const normalized = normalizeDateString(masked);
+
+  return normalized ?? masked;
+}
+
+function normalizeDateString(value: string) {
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (isoMatch) {
+    return toDateOnly(
+      Number(isoMatch[1]),
+      Number(isoMatch[2]),
+      Number(isoMatch[3]),
+    );
+  }
+
+  const slashMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  if (slashMatch) {
+    return toDateOnly(
+      Number(slashMatch[3]),
+      Number(slashMatch[2]),
+      Number(slashMatch[1]),
+    );
+  }
+
+  return null;
+}
+
+function maskDateInput(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 8);
+
+  if (digits.length <= 2) {
+    return digits;
+  }
+
+  if (digits.length <= 4) {
+    return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  }
+
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
 }
 
 function normalizeLiquidationForDisplay(
@@ -1797,6 +1962,10 @@ function buildModificationTypeLabel({
 }) {
   if (hasProrroga && noAddedValue && !hasAddedValue && !hasObjectChange) {
     return "Prórroga de plazo sin adición de valor";
+  }
+
+  if (hasObjectChange && !hasAddedValue && !hasProrroga) {
+    return "Cambio de objeto sin impacto asegurable";
   }
 
   const parts = [

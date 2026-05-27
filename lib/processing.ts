@@ -792,6 +792,13 @@ export function applyDeterministicAmendmentFallbacksForTest(
   return applyDeterministicAmendmentFallbacks(extraction, extractedText);
 }
 
+export function applyDeterministicContractFallbacksForTest(
+  extraction: AIExtraction,
+  extractedText: string,
+) {
+  return applyDeterministicDateFallbacks(extraction, extractedText);
+}
+
 function deterministicDateValue(value: string, source: string) {
   return {
     valor: value,
@@ -1528,6 +1535,10 @@ function buildModificationTypeLabel({
     return "Prórroga de plazo sin adición de valor";
   }
 
+  if (hasObjectChange && !hasAddedValue && !hasProrroga) {
+    return "Cambio de objeto sin impacto asegurable";
+  }
+
   const parts = [
     hasAddedValue ? "Adición de valor" : null,
     hasProrroga ? "prórroga de plazo" : null,
@@ -1700,9 +1711,11 @@ export function mapExtractionToContractUpdate(extraction: unknown): ContractUpda
   const valorContrato = asRecord(record.valor_contrato);
   const contratante = asRecord(record.contratante);
   const contratista = asRecord(record.contratista);
-  const normalizedContractValue = normalizeNumber(
-    valorContrato.valor_numerico ?? valorContrato.valor ?? record.valor_contrato,
-  );
+  const normalizedContractValue =
+    resolveContractTotalValueFromRecord(record).total ??
+    normalizeNumber(
+      valorContrato.valor_numerico ?? valorContrato.valor ?? record.valor_contrato,
+    );
 
   return {
     numero_contrato: normalizeText(record.numero_contrato),
@@ -2088,11 +2101,17 @@ function applyDeterministicDateFallbacks(
 ): AIExtraction {
   const actaInicioDependency = findActaInicioDependencyCandidate(extractedText);
   const candidate = findContractDurationDateCandidate(extractedText);
+  const provisionalStart = findContractSignatureOrPerfectionDate(extractedText);
   let baseExtraction = extraction;
 
   if (actaInicioDependency && !actaInicioDependency.startDate) {
     const actaDuration = candidate?.duration ??
       extractDuration(actaInicioDependency.source);
+    const provisionalStartDate = provisionalStart?.date ?? null;
+    const provisionalEndDate =
+      provisionalStartDate && actaDuration
+        ? addDuration(provisionalStartDate, actaDuration)
+        : null;
     const plazoFromActa = durationToPlazoText(
       actaDuration,
       "contados a partir de la fecha de suscripción del Acta de Inicio",
@@ -2102,17 +2121,17 @@ function applyDeterministicDateFallbacks(
       ...extraction,
       fecha_inicio: {
         ...extraction.fecha_inicio,
-        valor: null,
-        confianza: "baja",
-        pagina: actaInicioDependency.pageNumber,
-        fuente: actaInicioDependency.source,
+        valor: provisionalStartDate,
+        confianza: provisionalStartDate ? "media" : "baja",
+        pagina: provisionalStart?.pageNumber ?? actaInicioDependency.pageNumber,
+        fuente: provisionalStart?.source ?? actaInicioDependency.source,
       },
       fecha_fin: {
         ...extraction.fecha_fin,
-        valor: null,
-        confianza: "baja",
-        pagina: actaInicioDependency.pageNumber,
-        fuente: actaInicioDependency.source,
+        valor: provisionalEndDate,
+        confianza: provisionalEndDate ? "media" : "baja",
+        pagina: provisionalStart?.pageNumber ?? actaInicioDependency.pageNumber,
+        fuente: provisionalStart?.source ?? actaInicioDependency.source,
       },
       plazo: normalizeText(extraction.plazo.valor)
         ? extraction.plazo
@@ -2124,13 +2143,15 @@ function applyDeterministicDateFallbacks(
           },
       alertas: [
         ...extraction.alertas,
-        "El plazo depende del Acta de Inicio; ingrese la fecha de inicio para calcular fecha fin.",
+        provisionalStartDate
+          ? "La vigencia depende del Acta de Inicio. Se usa la fecha de firma/perfeccionamiento como fecha provisional para cotización. Ajuste manualmente cuando exista el acta."
+          : "El plazo depende del Acta de Inicio; ingrese la fecha de inicio para calcular fecha fin.",
       ],
     };
   }
 
   if (!candidate) {
-    return baseExtraction;
+    return applyDeterministicContractValueFallbacks(baseExtraction, extractedText);
   }
 
   const next: AIExtraction = {
@@ -2185,7 +2206,7 @@ function applyDeterministicDateFallbacks(
     return true;
   });
 
-  return next;
+  return applyDeterministicContractValueFallbacks(next, extractedText);
 }
 
 function findContractDurationDateCandidate(text: string) {
@@ -2241,6 +2262,48 @@ function findActaInicioDependencyCandidate(text: string) {
         pageNumber: Number.isFinite(pageNumber) ? pageNumber : null,
         startDate: extractActaInicioDate(pageText),
         source: extractRelevantDateSentence(pageText),
+      };
+    }
+  }
+
+  return null;
+}
+
+function findContractSignatureOrPerfectionDate(text: string) {
+  const pagePattern = /--- Página (\d+) ---\n([\s\S]*?)(?=\n\n--- Página \d+ ---|$)/g;
+  const pages = Array.from(text.matchAll(pagePattern));
+
+  for (const match of pages) {
+    const pageNumber = Number(match[1]);
+    const pageText = match[2] ?? "";
+    const sentences = pageText
+      .replace(/\s+/g, " ")
+      .split(/(?<=[.!?;:])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+    const signatureSentence = sentences.find((sentence) => {
+      const normalized = normalizeForDateSearch(sentence);
+
+      return (
+        (normalized.includes("suscripcion") ||
+          normalized.includes("suscribe") ||
+          normalized.includes("suscrito") ||
+          normalized.includes("se firma") ||
+          normalized.includes("firma del contrato") ||
+          normalized.includes("perfeccionamiento") ||
+          normalized.includes("perfeccionado")) &&
+        !normalized.includes("acta de inicio")
+      );
+    });
+    const date = signatureSentence
+      ? extractFirstSpanishDate(signatureSentence)
+      : null;
+
+    if (date && signatureSentence) {
+      return {
+        date,
+        pageNumber: Number.isFinite(pageNumber) ? pageNumber : null,
+        source: signatureSentence.slice(0, 900),
       };
     }
   }
@@ -2391,6 +2454,303 @@ function durationToPlazoText(
   ].filter(Boolean);
 
   return parts.length > 0 ? `${parts.join(" ")} ${suffix}` : null;
+}
+
+function applyDeterministicContractValueFallbacks(
+  extraction: AIExtraction,
+  extractedText: string,
+): AIExtraction {
+  const valueResolution = resolveContractTotalValueFromRecord(
+    extraction as unknown as Record<string, unknown>,
+    extractedText,
+  );
+
+  if (valueResolution.total === null) {
+    const needsReview = valueResolution.alerts.length > 0;
+
+    return needsReview
+      ? {
+          ...extraction,
+          requiere_revision_valor: deterministicBooleanValue(
+            true,
+            "Valor contractual periódico detectado sin periodos suficientes.",
+          ),
+          alertas: [...extraction.alertas, ...valueResolution.alerts],
+        }
+      : extraction;
+  }
+
+  const currentValue = normalizeNumber(extraction.valor_contrato.valor_numerico);
+  const shouldReplace =
+    currentValue === null ||
+    valueResolution.requiresMultiplication ||
+    Math.abs(currentValue - valueResolution.total) > 1;
+
+  if (!shouldReplace) {
+    return valueResolution.alerts.length > 0
+      ? {
+          ...extraction,
+          requiere_revision_valor: deterministicBooleanValue(
+            true,
+            "El valor contractual requiere revisión humana.",
+          ),
+          alertas: [...extraction.alertas, ...valueResolution.alerts],
+        }
+      : extraction;
+  }
+
+  return {
+    ...extraction,
+    valor_contrato: {
+      ...extraction.valor_contrato,
+      valor_numerico: valueResolution.total,
+      confianza: valueResolution.requiresMultiplication
+        ? "media"
+        : extraction.valor_contrato.confianza,
+      fuente:
+        valueResolution.explanation ??
+        extraction.valor_contrato.fuente,
+    },
+    valor_contrato_total: deterministicNumberValue(
+      valueResolution.total,
+      valueResolution.explanation ?? "Valor total contractual normalizado.",
+    ),
+    valor_unitario_periodico:
+      valueResolution.unit === null
+        ? extraction.valor_unitario_periodico
+        : deterministicNumberValue(
+            valueResolution.unit,
+            "Valor unitario periódico detectado en el contrato.",
+          ),
+    periodicidad_valor:
+      valueResolution.periodicity === null
+        ? extraction.periodicidad_valor
+        : deterministicTextValue(
+            valueResolution.periodicity,
+            "Periodicidad del valor contractual detectada.",
+          ),
+    numero_periodos:
+      valueResolution.periodCount === null
+        ? extraction.numero_periodos
+        : deterministicIntegerValue(
+            valueResolution.periodCount,
+            "Número de periodos contractuales usado para calcular valor total.",
+          ),
+    explicacion_calculo_valor: deterministicTextValue(
+      valueResolution.explanation ?? "Valor total contractual normalizado.",
+      "Explicación determinística del valor total contractual.",
+    ),
+    requiere_revision_valor: deterministicBooleanValue(
+      valueResolution.alerts.length > 0,
+      valueResolution.alerts.length > 0
+        ? "El valor contractual requiere revisión humana."
+        : "Valor contractual calculado sin ambigüedad.",
+    ),
+    alertas: [...extraction.alertas, ...valueResolution.alerts],
+  };
+}
+
+type ContractValueResolution = {
+  total: number | null;
+  unit: number | null;
+  periodicity: string | null;
+  periodCount: number | null;
+  requiresMultiplication: boolean;
+  explanation: string | null;
+  alerts: string[];
+};
+
+function resolveContractTotalValueFromRecord(
+  record: Record<string, unknown>,
+  extractedText = "",
+): ContractValueResolution {
+  const valorContrato = asRecord(record.valor_contrato);
+  const currentValue = normalizeNumber(
+    valorContrato.valor_numerico ?? valorContrato.valor ?? record.valor_contrato,
+  );
+  const explicitTotal =
+    normalizeNumber(asRecord(record.valor_contrato_total).valor) ??
+    findExplicitTotalContractValue(extractedText);
+  const periodicity = resolveContractValuePeriodicity(
+    normalizeText(asRecord(record.periodicidad_valor).valor),
+    extractedText,
+  );
+  const periodCount =
+    normalizeInteger(asRecord(record.numero_periodos).valor) ??
+    findContractPeriodCount(extractedText);
+  const unit =
+    normalizeNumber(asRecord(record.valor_unitario_periodico).valor) ??
+    findPeriodicContractUnitValue(extractedText) ??
+    (periodicity !== null && currentValue !== null && periodCount !== null
+      ? currentValue
+      : null);
+
+  if (explicitTotal !== null) {
+    return {
+      total: explicitTotal,
+      unit,
+      periodicity,
+      periodCount,
+      requiresMultiplication: false,
+      explanation: "Valor total explícito del contrato usado como base.",
+      alerts: [],
+    };
+  }
+
+  if (unit !== null && periodCount !== null && periodCount > 0) {
+    const total = roundMoney(unit * periodCount);
+
+    return {
+      total,
+      unit,
+      periodicity: periodicity ?? "mensual",
+      periodCount,
+      requiresMultiplication: true,
+      explanation: `Valor total calculado como valor periódico ${formatPlainMoney(unit)} x ${periodCount} periodos = ${formatPlainMoney(total)}.`,
+      alerts: [],
+    };
+  }
+
+  if (unit !== null && periodCount === null) {
+    return {
+      total: currentValue,
+      unit,
+      periodicity,
+      periodCount,
+      requiresMultiplication: false,
+      explanation: null,
+      alerts: [
+        "Se detectó valor mensual o periódico, pero no se pudo determinar número de periodos; revise valor total del contrato.",
+      ],
+    };
+  }
+
+  return {
+    total: currentValue,
+    unit,
+    periodicity,
+    periodCount,
+    requiresMultiplication: false,
+    explanation: null,
+    alerts: [],
+  };
+}
+
+function resolveContractValuePeriodicity(
+  extractedPeriodicity: string | null,
+  text: string,
+) {
+  const normalized = normalizeForDateSearch(
+    [extractedPeriodicity, text].filter(Boolean).join(" "),
+  );
+
+  if (
+    normalized.includes("mensual") ||
+    normalized.includes("mes vencido") ||
+    normalized.includes("cada mes")
+  ) {
+    return "mensual";
+  }
+
+  if (normalized.includes("diario") || normalized.includes("cada dia")) {
+    return "diario";
+  }
+
+  return extractedPeriodicity;
+}
+
+function findExplicitTotalContractValue(text: string) {
+  if (!text) {
+    return null;
+  }
+
+  const segments = text
+    .replace(/\n+/g, ". ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((segment) => {
+      const normalized = normalizeForDateSearch(segment);
+
+      return (
+        normalized.includes("valor total") ||
+        normalized.includes("valor del contrato") ||
+        normalized.includes("presupuesto total")
+      ) && !normalized.includes("mensual");
+    });
+
+  return segments
+    .map((segment) => extractFirstMoneyAmount(segment))
+    .find((value): value is number => value !== null) ?? null;
+}
+
+function findPeriodicContractUnitValue(text: string) {
+  if (!text) {
+    return null;
+  }
+
+  const segments = text
+    .replace(/\n+/g, ". ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((segment) => {
+      const normalized = normalizeForDateSearch(segment);
+
+      return (
+        normalized.includes("mensual") ||
+        normalized.includes("precio mes") ||
+        normalized.includes("valor mes") ||
+        normalized.includes("canon") ||
+        normalized.includes("costo periodico")
+      );
+    });
+
+  return segments
+    .map((segment) => extractFirstMoneyAmount(segment))
+    .find((value): value is number => value !== null) ?? null;
+}
+
+function findContractPeriodCount(text: string) {
+  const durationSegments = text
+    .replace(/\n+/g, ". ")
+    .split(/(?<=[.!?;:])\s+/)
+    .filter((segment) => {
+      const normalized = normalizeForDateSearch(segment);
+
+      return (
+        (normalized.includes("duracion") ||
+          normalized.includes("plazo") ||
+          normalized.includes("vigencia")) &&
+        (normalized.includes("contrato") ||
+          normalized.includes("ejecucion") ||
+          normalized.includes("servicio")) &&
+        !normalized.includes("garantia") &&
+        !normalized.includes("poliza") &&
+        !normalized.includes("amparo")
+      );
+    });
+  const duration = durationSegments
+    .map((segment) => extractDuration(segment))
+    .find((candidate): candidate is { years: number; months: number; days: number } =>
+      candidate !== null,
+    ) ?? null;
+
+  if (!duration) {
+    return null;
+  }
+
+  if (duration.months > 0 && duration.years === 0 && duration.days === 0) {
+    return duration.months;
+  }
+
+  if (duration.years > 0 && duration.months === 0 && duration.days === 0) {
+    return duration.years * 12;
+  }
+
+  return null;
+}
+
+function extractFirstMoneyAmount(text: string) {
+  const match = text.match(/\$\s*[\d.,]+/);
+
+  return match ? normalizeNumber(match[0]) : null;
 }
 
 function getSpanishMonthNumber(month: string) {
