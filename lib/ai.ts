@@ -568,6 +568,7 @@ function buildAmendmentExtractionPrompt(extractedText: string, retrying: boolean
     retryInstruction,
     "Analiza este documento como otrosí o modificación contractual de un contrato base existente.",
     "Extrae solo el delta: numero_modificacion, tipo_modificacion, contrato afectado, fecha de firma, valor anterior, valor de adicion, valor acumulado del contrato, fecha fin anterior, nueva fecha de terminacion, dias de prorroga, cambio de objeto y ajuste de garantias.",
+    "Para valores de adicion distingue valor_adicion_total, valor_adicion_unitario, periodicidad_valor_adicion, numero_periodos_adicionados, periodos_adicionados, requiere_multiplicacion y explicacion_calculo_valor_adicion. Si el documento trae valor mensual o unitario por varios meses/periodos, no lo reportes como total: calcula o explica total = unitario x periodos. Si trae un total explicito, usa ese total.",
     "Busca expresiones como otrosi, modificacion, adicion, prorroga, plazo, nueva fecha de terminacion, valor acumulado, fecha de firma, objeto, garantias, polizas y amparos.",
     "Si el otrosí modifica garantias o crea amparos, extraelos en garantias usando las mismas reglas del contrato base. No inventes datos faltantes.",
     "Si aparece impuesto de timbre, reportalo en impuesto_timbre y alertas como dato informativo. Nunca lo mezcles con primas de poliza.",

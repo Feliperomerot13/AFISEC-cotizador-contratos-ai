@@ -5,7 +5,9 @@ import {
   calculateQuoteTotalsByBlock,
   formatCoverageName,
   getQuoteCommercialIssues,
+  isCivilLiabilityCoverageType,
   type QuoteSnapshot,
+  type QuoteSnapshotSubcoverage,
 } from "@/lib/quotes";
 
 type QuotePdfInput = {
@@ -46,6 +48,7 @@ const AFISEC_PRIMARY = "0.824 0.357 0.188";
 const AFISEC_GRAY = "0.478 0.478 0.478";
 const TABLE_BORDER = "0.86 0.86 0.86";
 const TABLE_HEADER = "0.96 0.94 0.93";
+const SOFT_FILL = "0.985 0.985 0.985";
 const AFISEC_LOGO_PATH = join(
   process.cwd(),
   "public",
@@ -301,6 +304,29 @@ export function generateQuotePdf({
         lineHeight: 8.2,
         minHeight: 24,
       });
+
+      if (
+        isCivilLiabilityCoverageType(amparo.tipo_amparo) &&
+        amparo.subamparos.some((subamparo) => subamparo.incluido)
+      ) {
+        addTableRows(
+          [
+            [
+              {
+                text: `Subamparos RCE incluidos: ${formatRceSubcoverages(amparo.subamparos, snapshot.contrato.moneda)}. Sin prima individual; la prima corresponde a la línea principal RCE/PLO.`,
+                width: CONTENT_WIDTH,
+                fill: SOFT_FILL,
+                color: AFISEC_GRAY,
+              },
+            ],
+          ],
+          {
+            fontSize: 6.4,
+            lineHeight: 8.2,
+            minHeight: 18,
+          },
+        );
+      }
     });
 
     page().y -= 12;
@@ -544,6 +570,23 @@ export function generateQuotePdf({
     }
 
     return value ? "Sí" : "No";
+  }
+
+  function formatRceSubcoverages(
+    subcoverages: QuoteSnapshotSubcoverage[],
+    currency: string,
+  ) {
+    return subcoverages
+      .filter((subcoverage) => subcoverage.incluido)
+      .map((subcoverage) => {
+        const sublimit =
+          subcoverage.valor_sublimite === null
+            ? ""
+            : ` (${formatMoney(subcoverage.valor_sublimite, currency)})`;
+
+        return `${subcoverage.nombre}${sublimit}`;
+      })
+      .join("; ");
   }
 
   newPage();

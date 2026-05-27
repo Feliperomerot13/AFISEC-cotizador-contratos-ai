@@ -350,9 +350,14 @@ export function calculateAmendmentLiquidation({
         : currentInsuredValue === null
           ? addedInsuredValue
           : roundMoney(currentInsuredValue + addedInsuredValue);
+    const adjustedCoverageEndDate = resolveAdjustedCoverageEndDate({
+      coverage,
+      previousEndDate,
+      newEndDate,
+    });
     const additionDays =
       addedValue > 0
-        ? daysBetweenDateOnly(coverage.fecha_desde, newEndDate) ??
+        ? daysBetweenDateOnly(coverage.fecha_desde, adjustedCoverageEndDate) ??
           coverage.dias_vigencia ??
           extensionDays
         : 0;
@@ -378,7 +383,7 @@ export function calculateAmendmentLiquidation({
       valor_asegurado_acumulado: accumulatedInsuredValue,
       fecha_desde: coverage.fecha_desde,
       fecha_hasta_anterior: coverage.fecha_hasta,
-      fecha_hasta: newEndDate ?? coverage.fecha_hasta,
+      fecha_hasta: adjustedCoverageEndDate ?? coverage.fecha_hasta,
       dias_vigencia_adicion: Math.max(additionDays, 0),
       dias_prorroga: Math.max(extensionDays, 0),
       tasa_aplicada: rate,
@@ -807,6 +812,44 @@ function daysBetweenDateOnly(start: string | null, end: string | null) {
   }
 
   return Math.max(0, Math.round((endTime - startTime) / 86_400_000));
+}
+
+function resolveAdjustedCoverageEndDate({
+  coverage,
+  previousEndDate,
+  newEndDate,
+}: {
+  coverage: AmendmentActiveCoverage;
+  previousEndDate: string | null;
+  newEndDate: string | null;
+}) {
+  if (!newEndDate) {
+    return coverage.fecha_hasta;
+  }
+
+  if (!previousEndDate || !coverage.fecha_hasta) {
+    return newEndDate;
+  }
+
+  const tailDays = daysBetweenDateOnly(previousEndDate, coverage.fecha_hasta);
+
+  if (tailDays === null || tailDays <= 0) {
+    return newEndDate;
+  }
+
+  return addDaysDateOnly(newEndDate, tailDays) ?? newEndDate;
+}
+
+function addDaysDateOnly(value: string, days: number) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+
+  if (!Number.isFinite(date.getTime()) || !Number.isFinite(days)) {
+    return null;
+  }
+
+  date.setUTCDate(date.getUTCDate() + Math.trunc(days));
+
+  return date.toISOString().slice(0, 10);
 }
 
 function roundMoney(value: number) {

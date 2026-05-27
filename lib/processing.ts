@@ -518,16 +518,33 @@ export async function processAmendmentDocument({
     activeState.contrato.base_calculo_amparos ??
     activeState.contrato.valor_contrato;
   const addedValue = basePayload.valor_adicion ?? 0;
+  const activePreviousEndDate =
+    activeState.contrato.fecha_fin ?? basePayload.fecha_desde ?? null;
+  const extractedAccumulatedValue = basePayload.valor_contrato_acumulado ?? null;
+  const calculatedAccumulatedValue =
+    previousContractValue === null
+      ? extractedAccumulatedValue
+      : roundMoney(previousContractValue + addedValue);
+  const sequenceAlerts = [
+    activeState.contrato.fecha_fin &&
+    basePayload.fecha_desde &&
+    activeState.contrato.fecha_fin !== basePayload.fecha_desde
+      ? `La fecha fin anterior extraída (${basePayload.fecha_desde}) contradice el estado vigente emitido (${activeState.contrato.fecha_fin}); se prioriza el estado vigente.`
+      : null,
+    extractedAccumulatedValue !== null &&
+    calculatedAccumulatedValue !== null &&
+    Math.abs(extractedAccumulatedValue - calculatedAccumulatedValue) > 1
+      ? `El valor acumulado extraído (${extractedAccumulatedValue}) no coincide con valor anterior más adición (${calculatedAccumulatedValue}); se prioriza el cálculo revisado.`
+      : null,
+  ].filter((item): item is string => Boolean(item));
   const draftModification = {
     ...basePayload,
     id: currentModification?.id ?? 0,
     secuencia: sequence,
     valor_contrato_anterior: previousContractValue,
     valor_adicion: addedValue,
-    valor_contrato_acumulado:
-      basePayload.valor_contrato_acumulado ??
-      (previousContractValue === null ? null : previousContractValue + addedValue),
-    fecha_desde: basePayload.fecha_desde ?? activeState.contrato.fecha_fin,
+    valor_contrato_acumulado: calculatedAccumulatedValue,
+    fecha_desde: activePreviousEndDate,
   } as ModificacionContractual;
   const liquidation = calculateAmendmentLiquidation({
     activeState,
@@ -536,6 +553,7 @@ export async function processAmendmentDocument({
   });
   const alertas = [
     ...result.extraction.alertas,
+    ...sequenceAlerts,
     result.extraction.impuesto_timbre.valor
       ? `Impuesto de timbre informado: ${result.extraction.impuesto_timbre.valor}`
       : null,
@@ -621,7 +639,13 @@ function applyDeterministicAmendmentFallbacks(
   const extensionDays =
     findExtensionDays(extractedText) ??
     (rangeDays !== null && rangeDays > 0 ? rangeDays : null);
-  const parsedAddedValue = findAddedValue(extractedText);
+  const additionValue = resolveAdditionValue({
+    extraction,
+    extractedText,
+    previousEndDate,
+    newEndDate,
+  });
+  const parsedAddedValue = additionValue.total;
   const noAddedValue = hasNoAddedValueSignal(extractedText);
   const hasAddedValue =
     parsedAddedValue !== null ||
@@ -670,7 +694,7 @@ function applyDeterministicAmendmentFallbacks(
             valor: parsedAddedValue,
             confianza: "media",
             pagina: extraction.valor_adicion.pagina,
-            fuente: "Valor adicionado derivado determinísticamente del texto del otrosí.",
+            fuente: additionValue.explanation,
           }
         : noAddedValue && extraction.valor_adicion.valor === null
         ? {
@@ -680,6 +704,45 @@ function applyDeterministicAmendmentFallbacks(
             fuente: "El otrosí indica prórroga sin adición de valor.",
         }
         : extraction.valor_adicion,
+    valor_adicion_total:
+      additionValue.total !== null
+        ? deterministicNumberValue(additionValue.total, additionValue.explanation)
+        : extraction.valor_adicion_total,
+    valor_adicion_unitario:
+      additionValue.unit !== null
+        ? deterministicNumberValue(
+            additionValue.unit,
+            "Valor unitario de adición derivado determinísticamente del texto del otrosí.",
+          )
+        : extraction.valor_adicion_unitario,
+    periodicidad_valor_adicion:
+      additionValue.periodicity
+        ? deterministicTextValue(
+            additionValue.periodicity,
+            "Periodicidad del valor de adición derivada determinísticamente.",
+          )
+        : extraction.periodicidad_valor_adicion,
+    numero_periodos_adicionados:
+      additionValue.periodCount !== null
+        ? deterministicIntegerValue(
+            additionValue.periodCount,
+            "Número de periodos adicionados derivado determinísticamente.",
+          )
+        : extraction.numero_periodos_adicionados,
+    periodos_adicionados:
+      additionValue.periods.length > 0
+        ? additionValue.periods
+        : extraction.periodos_adicionados,
+    requiere_multiplicacion: deterministicBooleanValue(
+      additionValue.requiresMultiplication,
+      additionValue.requiresMultiplication
+        ? "El valor adicionado total se calculó multiplicando valor unitario por periodos."
+        : "No se requirió multiplicación para el valor adicionado.",
+    ),
+    explicacion_calculo_valor_adicion: deterministicTextValue(
+      additionValue.explanation,
+      "Explicación determinística del valor adicionado.",
+    ),
     tipo_modificacion:
       modificationType
         ? {
@@ -712,13 +775,21 @@ function applyDeterministicAmendmentFallbacks(
       extensionRange
         ? "Fechas de prórroga ajustadas por lectura determinística del periodo del otrosí."
         : null,
+      ...additionValue.alerts,
       parsedAddedValue !== null
-        ? "Valor adicionado ajustado por lectura determinística del otrosí."
+        ? additionValue.explanation
         : null,
       noAddedValue ? "Valor adicionado interpretado como cero por prórroga sin adición." : null,
       objectSummary ? "Objeto nuevo ajustado por lectura determinística del otrosí." : null,
     ].filter((item): item is string => Boolean(item)),
   };
+}
+
+export function applyDeterministicAmendmentFallbacksForTest(
+  extraction: AmendmentExtraction,
+  extractedText: string,
+) {
+  return applyDeterministicAmendmentFallbacks(extraction, extractedText);
 }
 
 function deterministicDateValue(value: string, source: string) {
@@ -729,6 +800,53 @@ function deterministicDateValue(value: string, source: string) {
     fuente: source,
   };
 }
+
+function deterministicNumberValue(value: number, source: string) {
+  return {
+    valor: value,
+    confianza: "media" as const,
+    pagina: null,
+    fuente: source,
+  };
+}
+
+function deterministicIntegerValue(value: number, source: string) {
+  return {
+    valor: Math.trunc(value),
+    confianza: "media" as const,
+    pagina: null,
+    fuente: source,
+  };
+}
+
+function deterministicTextValue(value: string, source: string) {
+  return {
+    valor: value,
+    confianza: "media" as const,
+    pagina: null,
+    fuente: source,
+  };
+}
+
+function deterministicBooleanValue(value: boolean, source: string) {
+  return {
+    valor: value,
+    confianza: "media" as const,
+    pagina: null,
+    fuente: source,
+  };
+}
+
+type AdditionValueResolution = {
+  total: number | null;
+  unit: number | null;
+  periodicity: string | null;
+  periodCount: number | null;
+  periods: string[];
+  requiresMultiplication: boolean;
+  explanation: string;
+  alerts: string[];
+};
 
 type DateCandidate = {
   iso: string;
@@ -981,6 +1099,321 @@ function findAddedValue(text: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function resolveAdditionValue({
+  extraction,
+  extractedText,
+  previousEndDate,
+  newEndDate,
+}: {
+  extraction: AmendmentExtraction;
+  extractedText: string;
+  previousEndDate: string | null;
+  newEndDate: string | null;
+}): AdditionValueResolution {
+  const explicitTotalFromText = findExplicitTotalAddedValue(extractedText);
+  const unitFromText = findUnitAddedValue(extractedText);
+  const genericAddedValue = findAddedValue(extractedText);
+  const extractedTotal = normalizeNumber(extraction.valor_adicion_total.valor);
+  const extractedUnit = normalizeNumber(extraction.valor_adicion_unitario.valor);
+  const extractedAddedValue = normalizeNumber(extraction.valor_adicion.valor);
+  const periodicity = resolveAdditionPeriodicity(
+    extraction.periodicidad_valor_adicion.valor,
+    extractedText,
+  );
+  const periods = findAddedPeriods(extraction.periodos_adicionados, extractedText);
+  const explicitPeriodCount =
+    normalizeInteger(extraction.numero_periodos_adicionados.valor) ??
+    findExplicitAddedPeriodCount(extractedText);
+  const inferredPeriodCount =
+    periods.length > 0
+      ? periods.length
+      : periodicity === "mensual"
+        ? inferMonthlyPeriodsFromRange(previousEndDate, newEndDate)
+        : null;
+  const periodCount =
+    explicitPeriodCount && explicitPeriodCount > 0
+      ? explicitPeriodCount
+      : inferredPeriodCount;
+  const unit =
+    extractedUnit ??
+    unitFromText ??
+    (periodicity === "mensual" && periodCount !== null && periodCount > 1
+      ? genericAddedValue ?? extractedAddedValue ?? extractedTotal
+      : null);
+  const schemaTotalLooksLikeUnit =
+    extractedTotal !== null &&
+    unit !== null &&
+    periodCount !== null &&
+    periodCount > 1 &&
+    Math.abs(extractedTotal - unit) < 1;
+  const explicitTotal =
+    explicitTotalFromText ??
+    (schemaTotalLooksLikeUnit ? null : extractedTotal);
+  const alerts: string[] = [];
+
+  if (explicitTotal !== null) {
+    return {
+      total: explicitTotal,
+      unit,
+      periodicity,
+      periodCount,
+      periods,
+      requiresMultiplication: false,
+      explanation: "Valor adicionado total explícito usado como total del otrosí.",
+      alerts,
+    };
+  }
+
+  if (unit !== null && periodCount !== null && periodCount > 1) {
+    const total = roundMoney(unit * periodCount);
+
+    return {
+      total,
+      unit,
+      periodicity: periodicity ?? "mensual",
+      periodCount,
+      periods,
+      requiresMultiplication: true,
+      explanation: `Valor adicionado total calculado como valor unitario ${formatPlainMoney(unit)} x ${periodCount} periodos = ${formatPlainMoney(total)}.`,
+      alerts: [
+        ...alerts,
+        "Valor adicionado total calculado por valor unitario y número de periodos adicionados.",
+      ],
+    };
+  }
+
+  if (
+    (genericAddedValue ?? extractedAddedValue ?? extractedTotal) !== null &&
+    periodicity === "mensual" &&
+    periodCount === null
+  ) {
+    alerts.push(
+      "Se detectó valor mensual de adición, pero no se pudo determinar número de periodos; revise el total manualmente.",
+    );
+  }
+
+  const total = genericAddedValue ?? extractedAddedValue ?? extractedTotal ?? unit;
+
+  return {
+    total,
+    unit,
+    periodicity,
+    periodCount,
+    periods,
+    requiresMultiplication: false,
+    explanation:
+      total === null
+        ? "No se detectó valor adicionado total en el otrosí."
+        : "Valor adicionado tomado como total del otrosí.",
+    alerts,
+  };
+}
+
+function findExplicitTotalAddedValue(text: string) {
+  const candidates = splitIntoSearchSegments(text)
+    .filter((segment) => {
+      const normalized = normalizeForAmendmentSearch(segment);
+
+      return (
+        hasMoney(segment) &&
+        (
+          normalized.includes("valor total") ||
+          normalized.includes("total adicionado") ||
+          normalized.includes("valor adicionado total") ||
+          normalized.includes("valor total adicionado") ||
+          normalized.includes("suma total") ||
+          normalized.includes("total de la adicion")
+        ) &&
+        !hasMonthlyValueSignal(normalized)
+      );
+    })
+    .map((segment) => extractLastCurrencyAmount(segment))
+    .filter((value): value is number => value !== null);
+
+  return candidates.at(-1) ?? null;
+}
+
+function findUnitAddedValue(text: string) {
+  const candidates = splitIntoSearchSegments(text)
+    .filter((segment) => {
+      const normalized = normalizeForAmendmentSearch(segment);
+
+      return hasMoney(segment) && hasMonthlyValueSignal(normalized);
+    })
+    .map((segment) => extractLastCurrencyAmount(segment))
+    .filter((value): value is number => value !== null);
+
+  return candidates.at(-1) ?? null;
+}
+
+function resolveAdditionPeriodicity(value: string | null, text: string) {
+  const normalizedValue = normalizeForAmendmentSearch(value ?? "");
+  const normalizedText = normalizeForAmendmentSearch(text);
+
+  if (
+    normalizedValue.includes("mensual") ||
+    normalizedValue.includes("mes") ||
+    hasMonthlyValueSignal(normalizedText)
+  ) {
+    return "mensual";
+  }
+
+  if (normalizedValue.includes("diario") || normalizedValue.includes("dia")) {
+    return "diaria";
+  }
+
+  return normalizeText(value);
+}
+
+function findExplicitAddedPeriodCount(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+  const numericMatch = normalized.match(
+    /(?:por|durante|correspondiente a|para)\s+(?:los\s+)?(\d{1,2})\s+meses/,
+  );
+
+  if (numericMatch) {
+    return Number(numericMatch[1]);
+  }
+
+  const wordMatches: Array<[string, number]> = [
+    ["un mes", 1],
+    ["una mensualidad", 1],
+    ["dos meses", 2],
+    ["tres meses", 3],
+    ["cuatro meses", 4],
+    ["cinco meses", 5],
+    ["seis meses", 6],
+  ];
+
+  return wordMatches.find(([marker]) => normalized.includes(marker))?.[1] ?? null;
+}
+
+function findAddedPeriods(extractedPeriods: string[], text: string) {
+  const periods = new Set<string>();
+
+  extractedPeriods
+    .map((period) => normalizeText(period))
+    .filter((period): period is string => Boolean(period))
+    .forEach((period) => periods.add(period));
+
+  findAddedMonthPeriods(text).forEach((period) => periods.add(period));
+
+  return Array.from(periods);
+}
+
+function findAddedMonthPeriods(text: string) {
+  const periods = new Set<string>();
+  const monthPattern =
+    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b(?:\s+de\s+(20\d{2}))?/gi;
+
+  splitIntoSearchSegments(text)
+    .filter((segment) => {
+      const normalized = normalizeForAmendmentSearch(segment);
+
+      return (
+        normalized.includes("adicion") ||
+        normalized.includes("valor") ||
+        normalized.includes("mensual") ||
+        normalized.includes("meses") ||
+        normalized.includes("periodo")
+      );
+    })
+    .forEach((segment) => {
+      for (const match of segment.matchAll(monthPattern)) {
+        const index = match.index ?? 0;
+        const before = segment.slice(Math.max(0, index - 10), index);
+
+        if (/\d/.test(before)) {
+          continue;
+        }
+
+        const month = normalizeForAmendmentSearch(match[1]);
+        const year = match[2] ?? "";
+
+        periods.add(year ? `${month} ${year}` : month);
+      }
+    });
+
+  return Array.from(periods);
+}
+
+function inferMonthlyPeriodsFromRange(
+  previousEndDate: string | null,
+  newEndDate: string | null,
+) {
+  if (!previousEndDate || !newEndDate) {
+    return null;
+  }
+
+  const previous = parseDateOnlyParts(previousEndDate);
+  const next = parseDateOnlyParts(newEndDate);
+
+  if (!previous || !next) {
+    return null;
+  }
+
+  const monthDiff =
+    (next.year - previous.year) * 12 + (next.month - previous.month);
+
+  return monthDiff > 0 && monthDiff <= 24 ? monthDiff : null;
+}
+
+function parseDateOnlyParts(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+}
+
+function splitIntoSearchSegments(text: string) {
+  return text
+    .split(/[\n;]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function hasMonthlyValueSignal(normalizedText: string) {
+  return (
+    normalizedText.includes("mensual") ||
+    normalizedText.includes("mensuales") ||
+    normalizedText.includes("valor mes") ||
+    normalizedText.includes("valor por mes") ||
+    normalizedText.includes("por mes") ||
+    normalizedText.includes("cada mes") ||
+    normalizedText.includes("meses de")
+  );
+}
+
+function hasMoney(text: string) {
+  return /\$\s*[\d.,]+/.test(text);
+}
+
+function extractLastCurrencyAmount(text: string) {
+  const value = [...text.matchAll(/\$\s*([\d.,]+)/g)].at(-1)?.[1] ?? null;
+
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value.replace(/\./g, "").replace(",", "."));
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function formatPlainMoney(value: number) {
+  return new Intl.NumberFormat("es-CO", {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  }).format(value);
+}
+
 function toDateOnly(year: number, month: number, day: number) {
   const date = new Date(Date.UTC(year, month - 1, day));
 
@@ -1052,14 +1485,18 @@ function hasProrrogaSignal(text: string) {
 
 function hasObjectChangeSignal(text: string) {
   const normalized = normalizeForAmendmentSearch(text);
+  const hasSpecificCraneChange =
+    (normalized.includes("utilizando cinco") || normalized.includes("utilizando 5")) &&
+    (normalized.includes("seis") || normalized.includes("(6)") || normalized.includes("6 gruas"));
+  const hasObjectClauseChange =
+    normalized.includes("modificar la clausula primera") &&
+    (normalized.includes("objeto") || normalized.includes("grua"));
 
   return (
-    normalized.includes("modificar la clausula primera") ||
+    hasObjectClauseChange ||
     normalized.includes("modificar el objeto") ||
     normalized.includes("cambio de objeto") ||
-    normalized.includes("objeto del contrato") ||
-    normalized.includes("utilizando cinco") ||
-    normalized.includes("utilizando 5")
+    hasSpecificCraneChange
   );
 }
 

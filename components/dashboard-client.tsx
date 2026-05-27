@@ -7,8 +7,10 @@ import { useEffect, useState } from "react";
 type DashboardStats = {
   total: number;
   pendingValidation: number;
-  quotesGenerated: number;
-  issuedPolicies: number;
+  baseQuotesGenerated: number;
+  basePoliciesIssued: number;
+  amendmentsInReview: number;
+  issuedAmendments: number;
 };
 
 const statStyles = [
@@ -16,6 +18,8 @@ const statStyles = [
   "border-[#d25b30]/30 bg-[#d25b30]/5",
   "border-rose-200 bg-rose-50",
   "border-neutral-200 bg-neutral-50",
+  "border-amber-200 bg-amber-50",
+  "border-emerald-200 bg-emerald-50",
 ];
 
 export function DashboardClient() {
@@ -54,8 +58,10 @@ export function DashboardClient() {
   const cards = [
     { label: "Contratos cargados", value: stats?.total },
     { label: "Por validar", value: stats?.pendingValidation },
-    { label: "Cotizaciones generadas", value: stats?.quotesGenerated },
-    { label: "Pólizas emitidas", value: stats?.issuedPolicies },
+    { label: "Cotizaciones base generadas", value: stats?.baseQuotesGenerated },
+    { label: "Pólizas base emitidas", value: stats?.basePoliciesIssued },
+    { label: "Otrosíes en revisión", value: stats?.amendmentsInReview },
+    { label: "Otrosíes emitidos", value: stats?.issuedAmendments },
   ];
 
   return (
@@ -118,7 +124,7 @@ export function DashboardClient() {
         </div>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
         {cards.map((card, index) => (
           <div
             key={card.label}

@@ -7,7 +7,14 @@ export async function GET() {
   try {
     const supabase = getSupabaseAdmin();
 
-    const [total, pending, quotes, issuedPolicies] = await Promise.all([
+    const [
+      total,
+      pending,
+      baseQuotes,
+      issuedBasePolicies,
+      amendmentsInReview,
+      issuedAmendments,
+    ] = await Promise.all([
       supabase
         .from("contratos")
         .select("id", { count: "exact", head: true }),
@@ -23,10 +30,31 @@ export async function GET() {
         .from("cotizaciones")
         .select("id", { count: "exact", head: true })
         .eq("estado", "emitida"),
+      supabase
+        .from("modificaciones_contractuales")
+        .select("id", { count: "exact", head: true })
+        .in("estado", [
+          "cargado",
+          "procesando",
+          "pendiente_revision",
+          "validado",
+          "cotizado",
+          "error",
+          "pendiente_aplicacion",
+        ]),
+      supabase
+        .from("modificaciones_contractuales")
+        .select("id", { count: "exact", head: true })
+        .eq("estado", "endoso_emitido"),
     ]);
 
     const firstError =
-      total.error ?? pending.error ?? quotes.error ?? issuedPolicies.error;
+      total.error ??
+      pending.error ??
+      baseQuotes.error ??
+      issuedBasePolicies.error ??
+      amendmentsInReview.error ??
+      issuedAmendments.error;
 
     if (firstError) {
       throw new Error(`Fallo al consultar indicadores: ${firstError.message}`);
@@ -35,8 +63,10 @@ export async function GET() {
     return jsonOk({
       total: total.count ?? 0,
       pendingValidation: pending.count ?? 0,
-      quotesGenerated: quotes.count ?? 0,
-      issuedPolicies: issuedPolicies.count ?? 0,
+      baseQuotesGenerated: baseQuotes.count ?? 0,
+      basePoliciesIssued: issuedBasePolicies.count ?? 0,
+      amendmentsInReview: amendmentsInReview.count ?? 0,
+      issuedAmendments: issuedAmendments.count ?? 0,
     });
   } catch (error) {
     return jsonError(getErrorMessage(error));

@@ -230,7 +230,7 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
       { text: "VA vigente", width: 76, bold: true, fill: TABLE_HEADER, align: "right" },
       { text: "VA adición", width: 76, bold: true, fill: TABLE_HEADER, align: "right" },
       { text: "VA acumulado", width: 82, bold: true, fill: TABLE_HEADER, align: "right" },
-      { text: "Hasta", width: 54, bold: true, fill: TABLE_HEADER },
+      { text: "Nueva fecha fin contrato", width: 54, bold: true, fill: TABLE_HEADER },
       { text: "Días", width: 34, bold: true, fill: TABLE_HEADER, align: "right" },
       { text: "Prima adición", width: 82, bold: true, fill: TABLE_HEADER, align: "right" },
       { text: "Prima prórroga", width: 84, bold: true, fill: TABLE_HEADER, align: "right" },
@@ -389,8 +389,7 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
     ensureSpace(64);
     addSectionTitle("Observaciones comerciales");
     const notes = [
-      ...snapshot.observaciones,
-      ...snapshot.alertas.map((alert) => `Alerta informativa: ${alert}`),
+      ...getCommercialAmendmentNotes(snapshot),
     ];
 
     addTableRows(
@@ -513,6 +512,48 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
     pages.map((pdfPage) => pdfPage.commands.join("\n")),
     logo,
   );
+}
+
+function getCommercialAmendmentNotes(snapshot: AmendmentQuoteSnapshot) {
+  const baseNotes = snapshot.observaciones.filter((note) =>
+    isCommercialAmendmentNote(note),
+  );
+  const notes = baseNotes.length > 0
+    ? baseNotes
+    : [
+        "Cotización de ajuste sujeta a aprobación final de la aseguradora.",
+        "Esta cotización no constituye otrosí emitido ni cobertura vigente hasta su expedición formal.",
+      ];
+
+  if (snapshot.modificacion.dias_prorroga !== null) {
+    return [
+      ...notes,
+      "Los días de prórroga fueron calculados con base en las fechas revisadas.",
+    ];
+  }
+
+  return notes;
+}
+
+function isCommercialAmendmentNote(note: string) {
+  const normalized = note
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  return ![
+    "alerta",
+    "extraccion",
+    "normalizacion",
+    "ocr",
+    "lectura deterministica",
+    "campo",
+    "campos no encontrados",
+    "impuesto de timbre",
+    "fuente",
+    "confianza",
+    "json",
+  ].some((marker) => normalized.includes(marker));
 }
 
 function buildPdf(pageStreams: string[], logo: PdfImage | null) {

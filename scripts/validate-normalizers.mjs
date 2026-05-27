@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { calculateAmendmentLiquidation } from "../lib/amendments.ts";
 import { normalizeCoverage } from "../lib/coverage-calculations.ts";
 import { formatDate } from "../lib/format.ts";
 import {
@@ -9,6 +10,8 @@ import {
   normalizeEnum,
   normalizeNumber,
 } from "../lib/normalizers.ts";
+import { applyDeterministicAmendmentFallbacksForTest } from "../lib/processing.ts";
+import { amendmentExtractionSchema } from "../lib/schemas.ts";
 
 assert.equal(normalizeCurrency(null), "COP");
 assert.equal(normalizeCurrency("$"), "COP");
@@ -34,6 +37,149 @@ assert.equal(normalizeNumber("$ 1.200.000.000"), 1200000000);
 assert.equal(normalizeNumber("1,200,000,000"), 1200000000);
 assert.equal(normalizeNumber("número inválido"), null);
 assert.match(formatDate("2026-12-25"), /25/);
+
+const amendmentOneExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  [
+    "Otrosí No. 1.",
+    "Se adiciona al contrato el valor mensual de $203.093.584 para el mes de febrero de 2025.",
+    "El plazo se prorroga desde el 02 de febrero de 2025 hasta el 02 de marzo de 2025.",
+  ].join(" "),
+);
+
+assert.equal(amendmentOneExtraction.valor_adicion.valor, 203093584);
+assert.equal(amendmentOneExtraction.valor_adicion_total.valor, 203093584);
+assert.equal(amendmentOneExtraction.requiere_multiplicacion.valor, false);
+
+const amendmentTwoExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction(),
+  [
+    "Otrosí No. 2.",
+    "Se adiciona al contrato el valor mensual de $203.093.584 para el mes de marzo de 2025.",
+    "El plazo se prorroga desde el 02 de marzo de 2025 hasta el 02 de abril de 2025.",
+  ].join(" "),
+);
+
+assert.equal(amendmentTwoExtraction.valor_adicion.valor, 203093584);
+assert.equal(amendmentTwoExtraction.valor_adicion_total.valor, 203093584);
+assert.equal(amendmentTwoExtraction.requiere_multiplicacion.valor, false);
+
+const amendmentThreeExtraction = applyDeterministicAmendmentFallbacksForTest(
+  buildAmendmentExtraction({
+    valor_contrato_acumulado: sourcedNumber(3129549755),
+  }),
+  [
+    "Otrosí No. 3.",
+    "Se adiciona al contrato una tarifa mensual de $203.093.584 para los meses de abril y mayo de 2025.",
+    "El plazo se prorroga desde el 02 de abril de 2025 hasta el 02 de junio de 2025.",
+    "El impuesto de timbre se informa como obligación tributaria.",
+  ].join(" "),
+);
+
+assert.equal(amendmentThreeExtraction.valor_adicion_unitario.valor, 203093584);
+assert.equal(amendmentThreeExtraction.numero_periodos_adicionados.valor, 2);
+assert.deepEqual(amendmentThreeExtraction.periodos_adicionados, [
+  "abril",
+  "mayo 2025",
+]);
+assert.equal(amendmentThreeExtraction.valor_adicion.valor, 406187168);
+assert.equal(amendmentThreeExtraction.valor_adicion_total.valor, 406187168);
+assert.equal(amendmentThreeExtraction.requiere_multiplicacion.valor, true);
+
+const amendmentThreeLiquidation = calculateAmendmentLiquidation({
+  activeState: {
+    fuente: {
+      tipo: "endoso",
+      id: 2,
+      numero: "AJ-COT-2026-1-OT2",
+      version: 1,
+    },
+    cliente: {
+      id: 1,
+      nombre: "FERTOBRA S.A.S.",
+      nit: "Sin dato",
+      ejecutivo: "Carolina Barragán",
+    },
+    contrato: {
+      id: 1,
+      numero_contrato: "004 DE 2024",
+      objeto: "Servicio de grúa",
+      tipo_contrato: "estatal",
+      valor_contrato: 2926456171,
+      base_calculo_amparos: 2926456171,
+      base_calculo_incluye_iva: true,
+      moneda: "COP",
+      fecha_inicio: "2024-02-02",
+      fecha_fin: "2025-04-02",
+      plazo: null,
+      contratante: null,
+      contratante_nit: null,
+      contratista: null,
+      contratista_nit: null,
+    },
+    amparos: [
+      buildActiveCoverage({
+        tipo_amparo: "cumplimiento",
+        porcentaje: 0.3,
+        valor_asegurado: 877936851,
+        fecha_hasta: "2025-05-02",
+      }),
+      buildActiveCoverage({
+        tipo_amparo: "calidad_del_servicio",
+        porcentaje: 0.3,
+        valor_asegurado: 877936851,
+        fecha_hasta: "2025-05-02",
+      }),
+      buildActiveCoverage({
+        tipo_amparo: "salarios_y_prestaciones_sociales",
+        porcentaje: 0.1,
+        valor_asegurado: 292645617,
+        fecha_hasta: "2028-04-02",
+      }),
+      buildActiveCoverage({
+        tipo_amparo: "responsabilidad_civil_extracontractual",
+        porcentaje: null,
+        valor_asegurado: 1000000000,
+        fecha_hasta: "2025-05-02",
+        tasa: 0.0025,
+      }),
+    ],
+  },
+  modification: {
+    valor_contrato_anterior: 2926456171,
+    valor_adicion: 406187168,
+    valor_contrato_acumulado: 3332643339,
+    fecha_desde: "2025-04-02",
+    fecha_hasta: "2025-06-02",
+    dias_prorroga: 61,
+  },
+  generatedAt: "2026-05-27T00:00:00.000Z",
+});
+const amendmentThreeCompliance = amendmentThreeLiquidation.rows.find(
+  (row) => row.tipo_amparo === "cumplimiento",
+);
+const amendmentThreeQuality = amendmentThreeLiquidation.rows.find(
+  (row) => row.tipo_amparo === "calidad_del_servicio",
+);
+const amendmentThreePayroll = amendmentThreeLiquidation.rows.find(
+  (row) => row.tipo_amparo === "salarios_y_prestaciones_sociales",
+);
+const amendmentThreeRce = amendmentThreeLiquidation.rows.find(
+  (row) => row.tipo_amparo === "responsabilidad_civil_extracontractual",
+);
+
+assert.equal(amendmentThreeLiquidation.valor_adicion, 406187168);
+assert.equal(amendmentThreeLiquidation.dias_prorroga, 61);
+assert.equal(amendmentThreeCompliance?.valor_asegurado_adicion, 121856150.4);
+assert.equal(amendmentThreeCompliance?.fecha_hasta, "2025-07-02");
+assert.equal(amendmentThreeCompliance?.dias_vigencia_adicion, 516);
+assert.equal(amendmentThreeQuality?.fecha_hasta, "2025-07-02");
+assert.equal(amendmentThreeQuality?.dias_vigencia_adicion, 516);
+assert.equal(amendmentThreePayroll?.fecha_hasta, "2028-06-02");
+assert.equal(amendmentThreePayroll?.dias_vigencia_adicion, 1582);
+assert.equal(amendmentThreeRce?.valor_asegurado_adicion, 0);
+assert.equal(amendmentThreeRce?.prima_valor_adicionado, 0);
+assert.equal(amendmentThreeRce?.prima_prorroga, 417808.22);
 
 const serviceQualityCoverage = normalizeCoverage(
   {
@@ -664,5 +810,105 @@ assert.equal(contract011Quality.fecha_desde, "2026-12-25");
 assert.equal(contract011Quality.fecha_hasta, "2027-12-25");
 assert.equal(contract011Quality.dias_vigencia, 365);
 assert.equal(contract011Quality.requiere_revision, true);
+
+function sourcedValue(valor = null) {
+  return {
+    valor,
+    confianza: "baja",
+    pagina: null,
+    fuente: null,
+  };
+}
+
+function sourcedNumber(valor = null) {
+  return {
+    valor,
+    confianza: "baja",
+    pagina: null,
+    fuente: null,
+  };
+}
+
+function sourcedInteger(valor = null) {
+  return {
+    valor,
+    confianza: "baja",
+    pagina: null,
+    fuente: null,
+  };
+}
+
+function sourcedDate(valor = null) {
+  return {
+    valor,
+    confianza: "baja",
+    pagina: null,
+    fuente: null,
+  };
+}
+
+function sourcedBoolean(valor = null) {
+  return {
+    valor,
+    confianza: "baja",
+    pagina: null,
+    fuente: null,
+  };
+}
+
+function buildAmendmentExtraction(overrides = {}) {
+  return amendmentExtractionSchema.parse({
+    numero_modificacion: sourcedValue(null),
+    tipo_modificacion: sourcedValue(null),
+    contrato_afectado: sourcedValue(null),
+    fecha_firma: sourcedDate(null),
+    valor_contrato_anterior: sourcedNumber(null),
+    valor_adicion: sourcedNumber(null),
+    valor_adicion_total: sourcedNumber(null),
+    valor_adicion_unitario: sourcedNumber(null),
+    periodicidad_valor_adicion: sourcedValue(null),
+    numero_periodos_adicionados: sourcedInteger(null),
+    periodos_adicionados: [],
+    requiere_multiplicacion: sourcedBoolean(null),
+    explicacion_calculo_valor_adicion: sourcedValue(null),
+    valor_contrato_acumulado: sourcedNumber(null),
+    fecha_desde: sourcedDate(null),
+    fecha_hasta: sourcedDate(null),
+    dias_prorroga: sourcedInteger(null),
+    objeto_nuevo: sourcedValue(null),
+    requiere_ajuste_garantias: sourcedBoolean(null),
+    impuesto_timbre: sourcedValue(null),
+    fuente_texto: null,
+    fuente_pagina: null,
+    confianza: "baja",
+    requiere_revision: true,
+    motivo_revision: null,
+    garantias: [],
+    campos_no_encontrados: [],
+    alertas: [],
+    ...overrides,
+  });
+}
+
+function buildActiveCoverage({
+  tipo_amparo,
+  porcentaje,
+  valor_asegurado,
+  fecha_hasta,
+  tasa = 0.0019,
+}) {
+  return {
+    tipo_amparo,
+    porcentaje,
+    valor_asegurado,
+    valor_base_calculo: null,
+    tasa,
+    iva_porcentaje: 0.19,
+    fecha_desde: "2024-02-02",
+    fecha_hasta,
+    dias_vigencia: null,
+    subamparos: [],
+  };
+}
 
 console.info("Validaciones de normalización completadas.");

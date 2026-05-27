@@ -834,6 +834,9 @@ function AdjustmentQuotesTable({
   onRevert: (quote: CotizacionAjuste) => void;
 }) {
   const visibleQuotes = quotes.filter((quote) => quote.estado !== "anulada");
+  const emittedQuote = visibleQuotes.find(
+    (quote) => quote.estado === "endoso_emitido",
+  );
 
   if (visibleQuotes.length === 0) {
     return (
@@ -862,6 +865,8 @@ function AdjustmentQuotesTable({
         <tbody className="divide-y divide-neutral-100">
           {visibleQuotes.map((quote) => {
             const snapshot = getAmendmentQuoteSnapshot(quote);
+            const hasEmittedAlternative =
+              quote.estado === "generada" && Boolean(emittedQuote);
             const canRevert =
               quote.estado === "endoso_emitido" &&
               latestActiveEndorsement &&
@@ -894,11 +899,22 @@ function AdjustmentQuotesTable({
                     {quote.estado === "generada" ? (
                       <button
                         type="button"
-                        onClick={() => onEmit(quote)}
-                        disabled={action !== null}
+                        onClick={() => {
+                          if (!hasEmittedAlternative) {
+                            onEmit(quote);
+                          }
+                        }}
+                        disabled={action !== null || hasEmittedAlternative}
+                        title={
+                          hasEmittedAlternative
+                            ? "Ya existe una versión emitida para este otrosí."
+                            : undefined
+                        }
                         className="h-9 rounded-lg bg-neutral-950 px-3 text-xs font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
                       >
-                        {action === `emit:${quote.id}`
+                        {hasEmittedAlternative
+                          ? "Ya existe emitida"
+                          : action === `emit:${quote.id}`
                           ? "Emitiendo"
                           : "Emitir otrosí"}
                       </button>
@@ -1069,11 +1085,16 @@ function chooseAmendmentType(
   }
 
   const normalized = normalizeForAmendmentSearch(currentValue ?? "");
+  const normalizedFallback = normalizeForAmendmentSearch(fallbackValue);
 
   if (
     !normalized ||
     normalized === "prorroga" ||
-    (fallbackValue.includes("+") && !currentValue?.includes("+"))
+    (fallbackValue.includes("+") && !currentValue?.includes("+")) ||
+    (
+      normalized.includes("cambio de objeto") &&
+      !normalizedFallback.includes("cambio de objeto")
+    )
   ) {
     return fallbackValue;
   }
@@ -1735,14 +1756,18 @@ function hasProrrogaSignal(text: string) {
 
 function hasObjectChangeSignal(text: string) {
   const normalized = normalizeForAmendmentSearch(text);
+  const hasSpecificCraneChange =
+    (normalized.includes("utilizando cinco") || normalized.includes("utilizando 5")) &&
+    (normalized.includes("seis") || normalized.includes("(6)") || normalized.includes("6 gruas"));
+  const hasObjectClauseChange =
+    normalized.includes("modificar la clausula primera") &&
+    (normalized.includes("objeto") || normalized.includes("grua"));
 
   return (
-    normalized.includes("modificar la clausula primera") ||
+    hasObjectClauseChange ||
     normalized.includes("modificar el objeto") ||
     normalized.includes("cambio de objeto") ||
-    normalized.includes("objeto del contrato") ||
-    normalized.includes("utilizando cinco") ||
-    normalized.includes("utilizando 5")
+    hasSpecificCraneChange
   );
 }
 

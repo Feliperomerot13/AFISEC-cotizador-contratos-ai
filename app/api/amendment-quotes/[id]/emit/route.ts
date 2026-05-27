@@ -86,7 +86,7 @@ export async function POST(_request: Request, { params }: IdContext) {
 
     if (activeForModification) {
       return jsonError(
-        `Ya existe un otrosí emitido para este registro: ${activeForModification.numero_cotizacion} v${activeForModification.version}.`,
+        `Ya existe una versión emitida para este otrosí: ${activeForModification.numero_cotizacion} v${activeForModification.version}.`,
         409,
       );
     }

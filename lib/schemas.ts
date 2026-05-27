@@ -65,6 +65,15 @@ const sourcedIntegerSchema = z
   })
   .strict();
 
+const sourcedBooleanSchema = z
+  .object({
+    valor: z.boolean().nullable(),
+    confianza: confidenceSchema,
+    pagina: pageSchema,
+    fuente: sourceSchema,
+  })
+  .strict();
+
 const sourcedDateSchema = z
   .object({
     valor: dateSchema,
@@ -156,6 +165,43 @@ export const amendmentExtractionSchema = z
     fecha_firma: sourcedDateSchema,
     valor_contrato_anterior: sourcedNumberSchema,
     valor_adicion: sourcedNumberSchema,
+    valor_adicion_total: sourcedNumberSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    valor_adicion_unitario: sourcedNumberSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    periodicidad_valor_adicion: sourcedValueSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    numero_periodos_adicionados: sourcedIntegerSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    periodos_adicionados: z.array(z.string()).default([]),
+    requiere_multiplicacion: sourcedBooleanSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
+    explicacion_calculo_valor_adicion: sourcedValueSchema.default({
+      valor: null,
+      confianza: "baja",
+      pagina: null,
+      fuente: null,
+    }),
     valor_contrato_acumulado: sourcedNumberSchema,
     fecha_desde: sourcedDateSchema,
     fecha_hasta: sourcedDateSchema,
