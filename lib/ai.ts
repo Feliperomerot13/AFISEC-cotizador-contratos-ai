@@ -567,9 +567,11 @@ function buildAmendmentExtractionPrompt(extractedText: string, retrying: boolean
   return [
     retryInstruction,
     "Analiza este documento como otrosí o modificación contractual de un contrato base existente.",
-    "Extrae numero_modificacion, tipo_modificacion, contrato afectado, valor de adicion, valor acumulado del contrato, prorroga, nueva fecha de terminacion y cualquier modificacion a garantias o amparos.",
-    "Busca expresiones como otrosi, modificacion, adicion, prorroga, plazo, nueva fecha de terminacion, valor acumulado, anticipo, garantias, polizas y amparos.",
+    "Extrae solo el delta: numero_modificacion, tipo_modificacion, contrato afectado, fecha de firma, valor anterior, valor de adicion, valor acumulado del contrato, fecha fin anterior, nueva fecha de terminacion, dias de prorroga, cambio de objeto y ajuste de garantias.",
+    "Busca expresiones como otrosi, modificacion, adicion, prorroga, plazo, nueva fecha de terminacion, valor acumulado, fecha de firma, objeto, garantias, polizas y amparos.",
     "Si el otrosí modifica garantias o crea amparos, extraelos en garantias usando las mismas reglas del contrato base. No inventes datos faltantes.",
+    "Si aparece impuesto de timbre, reportalo en impuesto_timbre y alertas como dato informativo. Nunca lo mezcles con primas de poliza.",
+    "RCE/PLO debe tratarse como linea principal calculable; subamparos son informativos y no generan prima individual.",
     "Si no encuentras un campo, usa null y agrega una alerta cuando sea importante.",
     "Texto extraido por pagina:",
     extractedText,

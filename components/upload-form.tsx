@@ -2,12 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
+import { DEFAULT_EXECUTIVE, DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
 
 const documentTypeLabels: Record<string, string> = {
   contrato_base: "Contrato base",
-  otrosi: "Otrosí (futuro)",
-  otro: "Otro",
+  orden: "Orden de servicio",
+  orden_compra: "Orden de compra",
+  otrosi: "Otrosí",
 };
 
 type BaseContractOption = {
@@ -20,12 +21,17 @@ type BaseContractOption = {
     nit: string;
     ejecutivo: string;
   };
+  cotizaciones?: Array<{
+    id: string | number;
+    estado: string;
+  }>;
 };
 
 export function UploadForm() {
   const router = useRouter();
   const [documentType, setDocumentType] = useState("contrato_base");
   const [baseContracts, setBaseContracts] = useState<BaseContractOption[]>([]);
+  const [clientSearch, setClientSearch] = useState("");
   const [selectedClientNit, setSelectedClientNit] = useState("");
   const [selectedContractId, setSelectedContractId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -61,13 +67,21 @@ export function UploadForm() {
     };
   }, []);
 
+  const issuedBaseContracts = useMemo(
+    () =>
+      baseContracts.filter((contract) =>
+        contract.cotizaciones?.some((quote) => quote.estado === "emitida"),
+      ),
+    [baseContracts],
+  );
+
   const clientOptions = useMemo(() => {
     const byNit = new Map<
       string,
       BaseContractOption["clientes"] & { nit: string }
     >();
 
-    baseContracts.forEach((contract) => {
+    issuedBaseContracts.forEach((contract) => {
       if (!contract.clientes.nit) {
         return;
       }
@@ -81,18 +95,38 @@ export function UploadForm() {
     return Array.from(byNit.values()).sort((left, right) =>
       left.nombre.localeCompare(right.nombre, "es"),
     );
-  }, [baseContracts]);
+  }, [issuedBaseContracts]);
 
   const contractsForClient = useMemo(
     () =>
-      baseContracts.filter(
+      issuedBaseContracts.filter(
         (contract) => contract.clientes.nit === selectedClientNit,
       ),
-    [baseContracts, selectedClientNit],
+    [issuedBaseContracts, selectedClientNit],
   );
-  const selectedContract = baseContracts.find(
+  const filteredClientOptions = useMemo(() => {
+    const query = clientSearch
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+
+    if (!query) {
+      return clientOptions;
+    }
+
+    return clientOptions.filter((client) =>
+      `${client.nombre} ${client.nit}`
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [clientOptions, clientSearch]);
+  const selectedContract = issuedBaseContracts.find(
     (contract) => String(contract.id) === selectedContractId,
   );
+  const isAmendment = documentType === "otrosi";
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -103,7 +137,7 @@ export function UploadForm() {
     try {
       const formData = new FormData(event.currentTarget);
 
-      if (documentType === "otrosi" && !selectedContract) {
+      if (isAmendment && !selectedContract) {
         throw new Error("Selecciona el contrato base afectado por el otrosí.");
       }
 
@@ -151,7 +185,7 @@ export function UploadForm() {
           Carga
         </p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
-          {documentType === "otrosi" ? "Cargar otrosí" : "Nuevo contrato"}
+          {isAmendment ? "Cargar otrosí" : "Nuevo documento"}
         </h1>
       </div>
 
@@ -159,15 +193,41 @@ export function UploadForm() {
         onSubmit={onSubmit}
         className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
       >
-        {documentType === "otrosi" ? (
+        <div className="grid gap-5 md:grid-cols-2">
+          <label className="space-y-2 md:col-span-2">
+            <span className="text-sm font-medium text-neutral-700">
+              Tipo de documento
+            </span>
+            <select
+              name="tipoDocumento"
+              required
+              value={documentType}
+              onChange={(event) => {
+                setDocumentType(event.target.value);
+                setClientSearch("");
+                setSelectedClientNit("");
+                setSelectedContractId("");
+              }}
+              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+            >
+              {DOCUMENT_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {documentTypeLabels[type]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {isAmendment ? (
           <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
-            La carga de otrosí queda reservada para contratos con póliza base
-            emitida.
+            La carga de otrosí opera sobre contratos con póliza base emitida y
+            sin otrosíes pendientes.
           </div>
         ) : null}
 
-        <div className="grid gap-5 md:grid-cols-2">
-          {documentType === "otrosi" ? (
+        <div className="mt-5 grid gap-5 md:grid-cols-2">
+          {isAmendment ? (
             <>
               <input
                 type="hidden"
@@ -182,13 +242,30 @@ export function UploadForm() {
               <input
                 type="hidden"
                 name="ejecutivo"
-                value={selectedContract?.clientes.ejecutivo ?? "Diana"}
+                value={normalizeExecutiveForForm(
+                  selectedContract?.clientes.ejecutivo,
+                )}
               />
               <input
                 type="hidden"
                 name="contratoBaseId"
                 value={selectedContractId}
               />
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-neutral-700">
+                  Buscar cliente
+                </span>
+                <input
+                  value={clientSearch}
+                  onChange={(event) => {
+                    setClientSearch(event.target.value);
+                    setSelectedClientNit("");
+                    setSelectedContractId("");
+                  }}
+                  placeholder="Nombre o NIT"
+                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                />
+              </label>
               <label className="space-y-2">
                 <span className="text-sm font-medium text-neutral-700">
                   Cliente
@@ -203,7 +280,7 @@ export function UploadForm() {
                   className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
                 >
                   <option value="">Selecciona cliente</option>
-                  {clientOptions.map((client) => (
+                  {filteredClientOptions.map((client) => (
                     <option key={client.nit} value={client.nit}>
                       {client.nombre} · {client.nit}
                     </option>
@@ -254,15 +331,15 @@ export function UploadForm() {
             </>
           )}
 
-          {documentType === "otrosi" ? null : (
+          {isAmendment ? null : (
           <label className="space-y-2">
             <span className="text-sm font-medium text-neutral-700">
-              Ejecutiva
+              Ejecutivo comercial
             </span>
             <select
               name="ejecutivo"
               required
-              defaultValue="Diana"
+              defaultValue={DEFAULT_EXECUTIVE}
               className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               {EXECUTIVES.map((executive) => (
@@ -273,29 +350,6 @@ export function UploadForm() {
             </select>
           </label>
           )}
-
-          <label className="space-y-2">
-            <span className="text-sm font-medium text-neutral-700">
-              Tipo de documento
-            </span>
-            <select
-              name="tipoDocumento"
-              required
-              value={documentType}
-              onChange={(event) => {
-                setDocumentType(event.target.value);
-                setSelectedClientNit("");
-                setSelectedContractId("");
-              }}
-              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-            >
-              {DOCUMENT_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {documentTypeLabels[type]}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
 
         <label className="mt-5 block space-y-2">
@@ -335,4 +389,10 @@ export function UploadForm() {
       </form>
     </div>
   );
+}
+
+function normalizeExecutiveForForm(value: string | null | undefined): string {
+  return value && EXECUTIVES.some((executive) => executive === value)
+    ? value
+    : DEFAULT_EXECUTIVE;
 }

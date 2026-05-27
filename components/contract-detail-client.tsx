@@ -9,12 +9,13 @@ import {
   useState,
 } from "react";
 import {
+  DEFAULT_EXECUTIVE,
   DEFAULT_COVERAGE_RATE,
   DEFAULT_IVA_PERCENTAGE,
   DEFAULT_RCE_RATE,
   EXECUTIVES,
 } from "@/lib/constants";
-import { addDaysToDateOnly } from "@/lib/date-only";
+import { addDaysToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
 import {
   normalizeCoverage,
   type CoverageSubamparo,
@@ -24,7 +25,9 @@ import type {
   Cliente,
   Contrato,
   Cotizacion,
+  CotizacionAjuste,
   Documento,
+  ModificacionContractual,
   TasaReferencia,
 } from "@/lib/database.types";
 import {
@@ -42,12 +45,14 @@ import {
   normalizeText as normalizeTextValue,
 } from "@/lib/normalizers";
 import {
+  calculateQuoteTotalsByBlock,
   formatCoverageName,
   getQuoteSnapshot,
   quoteStatusLabel,
 } from "@/lib/quotes";
 import type { QuoteSnapshot, QuoteSnapshotSubcoverage } from "@/lib/quotes";
 import type { AIExtraction } from "@/lib/schemas";
+import { AmendmentsPanel } from "@/components/amendments-panel";
 import { ConfidenceBadge, StatusBadge } from "@/components/status-badge";
 
 type DocumentMetadata = Omit<Documento, "storage_path">;
@@ -60,6 +65,8 @@ type DetailResponse = {
   tasasReferencia: TasaReferencia[];
   extraction: AIExtraction | null;
   cotizaciones: Cotizacion[];
+  modificaciones: ModificacionContractual[];
+  cotizacionesAjuste: CotizacionAjuste[];
 };
 
 type ContractForm = {
@@ -75,6 +82,7 @@ type ContractForm = {
   fecha_fin_manual: boolean;
   plazo_dias: string;
   plazo: string;
+  renovable_automaticamente: "si" | "no";
   contratante: string;
   contratante_nit: string;
   contratista: string;
@@ -138,6 +146,7 @@ const emptyForm: ContractForm = {
   fecha_fin_manual: false,
   plazo_dias: "",
   plazo: "",
+  renovable_automaticamente: "no",
   contratante: "",
   contratante_nit: "",
   contratista: "",
@@ -148,7 +157,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const [detail, setDetail] = useState<DetailResponse | null>(null);
   const [form, setForm] = useState<ContractForm>(emptyForm);
   const [amparos, setAmparos] = useState<EditableAmparo[]>([]);
-  const [validadoPor, setValidadoPor] = useState("Diana");
+  const [validadoPor, setValidadoPor] = useState<string>(DEFAULT_EXECUTIVE);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [quoteAction, setQuoteAction] = useState<string | null>(null);
@@ -169,7 +178,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         amparoToEditable(amparo, nextDetail.tasasReferencia),
       ),
     );
-    setValidadoPor(nextDetail.contract.validado_por ?? "Diana");
+    setValidadoPor(normalizeExecutiveForForm(nextDetail.contract.validado_por));
   }, []);
 
   const loadDetail = useCallback(async () => {
@@ -234,6 +243,16 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     setSuccess(null);
 
     try {
+      const validationIssues = [
+        ...getContractDateIssues(form),
+        ...getManualDateIssues(amparos),
+        ...getRateInputIssues(amparos),
+      ];
+
+      if (validationIssues.length > 0) {
+        throw new Error(validationIssues.join(" "));
+      }
+
       const response = await fetch(`/api/contracts/${contractId}/validate`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -252,6 +271,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             fecha_inicio: form.fecha_inicio,
             fecha_fin: form.fecha_fin,
             plazo: buildPersistedPlazo(form),
+            renovable_automaticamente: form.renovable_automaticamente === "si",
             contratante: form.contratante,
             contratante_nit: form.contratante_nit,
             contratista: form.contratista,
@@ -281,8 +301,12 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               tasa_manual: amparo.tasa_manual,
               tipo_vigencia: amparo.tipo_vigencia || null,
               base_vigencia: amparo.base_vigencia || null,
-              fecha_desde: calculation.fecha_desde,
-              fecha_hasta: calculation.fecha_hasta,
+              fecha_desde: amparo.fecha_desde_manual
+                ? normalizeDateValue(amparo.fecha_desde)
+                : null,
+              fecha_hasta: amparo.fecha_hasta_manual
+                ? normalizeDateValue(amparo.fecha_hasta)
+                : null,
               dias_adicionales: calculation.dias_adicionales,
               fuente_pagina: integerOrNull(amparo.fuente_pagina),
               fuente_texto: amparo.fuente_texto || null,
@@ -387,6 +411,22 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     );
   }
 
+  async function onRenewQuote(fechaInicio: string, fechaFin: string) {
+    await runQuoteAction(
+      "renew",
+      () =>
+        fetch(`/api/contracts/${contractId}/renewal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+          }),
+        }),
+      "Cotización de prórroga generada correctamente.",
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500 shadow-sm">
@@ -409,9 +449,13 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const isIssuedLocked = Boolean(activeIssuedQuote);
   const canGenerateQuote =
     detail.contract.estado === "validado" && !isIssuedLocked;
+  const renewalExpirationAlert = getRenewalExpirationAlert(
+    detail.contract,
+    detail.amparos,
+  );
 
   return (
-    <form onSubmit={onValidate} className="space-y-6">
+    <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
@@ -456,7 +500,14 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         </div>
       ) : null}
 
+      {renewalExpirationAlert ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+          {renewalExpirationAlert}
+        </div>
+      ) : null}
+
       <QuotePanel
+        contract={detail.contract}
         quotes={quotes}
         activeIssuedQuote={activeIssuedQuote}
         contractState={detail.contract.estado}
@@ -465,6 +516,16 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         onGenerateQuote={onGenerateQuote}
         onEmitQuote={onEmitQuote}
         onRevertQuote={onRevertQuote}
+        onRenewQuote={onRenewQuote}
+      />
+
+      <AmendmentsPanel
+        baseQuote={activeIssuedQuote}
+        contract={detail.contract}
+        baseAmparos={detail.amparos}
+        modificaciones={detail.modificaciones ?? []}
+        cotizacionesAjuste={detail.cotizacionesAjuste ?? []}
+        onChanged={loadDetail}
       />
 
       {activeIssuedQuote ? (
@@ -474,10 +535,11 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         </div>
       ) : null}
 
-      <fieldset
-        disabled={isIssuedLocked}
-        className="space-y-6 disabled:opacity-70"
-      >
+      <form onSubmit={onValidate}>
+        <fieldset
+          disabled={isIssuedLocked}
+          className="space-y-6 disabled:opacity-70"
+        >
       <section className="grid gap-6 lg:grid-cols-[1fr_0.45fr]">
         <div className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
           <h2 className="text-lg font-semibold text-neutral-950">
@@ -552,10 +614,10 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             />
             <EditableField
               label="Fecha inicio"
-              type="date"
               value={form.fecha_inicio}
               onChange={(value) => updateForm(setForm, "fecha_inicio", value)}
               source={ai?.fecha_inicio}
+              asDate
             />
             <EditableField
               label="Plazo en días"
@@ -566,10 +628,10 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             />
             <EditableField
               label="Fecha fin calculada"
-              type="date"
               value={form.fecha_fin}
               onChange={(value) => updateForm(setForm, "fecha_fin", value)}
               source={ai?.fecha_fin}
+              asDate
             />
             <EditableField
               label="Plazo"
@@ -577,11 +639,36 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               onChange={(value) => updateForm(setForm, "plazo", value)}
               source={ai?.plazo}
             />
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-neutral-700">
+                Renovable automáticamente
+              </span>
+              <select
+                value={form.renovable_automaticamente}
+                onChange={(event) =>
+                  updateForm(
+                    setForm,
+                    "renovable_automaticamente",
+                    event.target.value,
+                  )
+                }
+                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+              >
+                <option value="no">No</option>
+                <option value="si">Sí</option>
+              </select>
+              <p className="text-xs leading-5 text-neutral-500">
+                La revisión manual prevalece sobre cualquier sugerencia del
+                documento.
+              </p>
+            </label>
           </div>
+          <ContractDateStatus form={form} />
           {startDependsOnActaInicio ? (
             <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              Fecha de inicio depende del Acta de Inicio. Ingrese la fecha
-              manualmente para calcular vigencias.
+              Fecha de inicio depende del Acta de Inicio. No se inventa fecha:
+              ingrese fecha de acta/inicio y plazo, o fecha inicio y fecha fin
+              manuales. Una fecha válida se usará para recalcular vigencias.
             </div>
           ) : null}
           {form.fecha_fin_manual ? (
@@ -699,6 +786,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               );
               const isAdvanceCoverage =
                 calculation.tipo_amparo === "buen_manejo_anticipo";
+              const rateIssue = getRateInputIssue(amparo.tasa);
 
               return (
                 <div
@@ -730,6 +818,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         updateAmparo(index, "valor_asegurado", value)
                       }
                     />
+                    {isAdvanceCoverage ? (
+                      <EditableAmparoField
+                        label="Base/valor anticipo"
+                        type="text"
+                        inputMode="decimal"
+                        value={formatInputNumber(numberOrNull(amparo.valor_base_calculo))}
+                        onChange={(value) =>
+                          updateAmparo(index, "valor_base_calculo", value)
+                        }
+                        help="Edite este valor si la base del anticipo no corresponde al valor total del contrato."
+                      />
+                    ) : null}
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-neutral-700">
                         Confianza
@@ -794,11 +894,13 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       onChange={(value) => updateAmparo(index, "cuantia_fija", value)}
                     />
                     <EditableAmparoField
-                      label="Tasa %"
+                      label="Tasa (%)"
                       type="text"
                       inputMode="decimal"
                       value={amparo.tasa}
                       onChange={(value) => updateAmparo(index, "tasa", value)}
+                      help="Digite 0.20 para una tasa de 0,20%. No use 20."
+                      warning={rateIssue}
                     />
                   </div>
 
@@ -892,6 +994,12 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         value={getAdvanceBaseCriterion(calculation, form)}
                       />
                     ) : null}
+                    {isAdvanceCoverage ? (
+                      <ReadOnlyMetric
+                        label="Origen anticipo"
+                        value={getAdvanceBaseOrigin(amparo, form)}
+                      />
+                    ) : null}
                     <ReadOnlyMetric
                       label="Modo cálculo"
                       value={calculation.modo_calculo ?? "Sin dato"}
@@ -901,7 +1009,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       value={`${formatPercent(calculation.iva_porcentaje)}%`}
                     />
                     <ReadOnlyMetric
-                      label="Tasa %"
+                      label="Tasa (%)"
                       value={
                         decimalFromRatePercent(amparo.tasa) === null
                           ? "Sin tasa"
@@ -917,10 +1025,21 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       checked={amparo.fecha_desde_manual}
                       value={amparo.fecha_desde}
                       onCheckedChange={(checked) =>
-                        updateAmparo(index, "fecha_desde_manual", checked)
+                        updateAmparoDateOverride(
+                          index,
+                          "fecha_desde_manual",
+                          "fecha_desde",
+                          checked,
+                          calculation.fecha_desde,
+                        )
                       }
                       onValueChange={(value) =>
                         updateAmparo(index, "fecha_desde", value)
+                      }
+                      warning={
+                        amparo.fecha_desde_manual
+                          ? getRequiredDateInputIssue("Fecha inicio manual", amparo.fecha_desde)
+                          : null
                       }
                     />
                     <ManualDateOverride
@@ -929,10 +1048,21 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       checked={amparo.fecha_hasta_manual}
                       value={amparo.fecha_hasta}
                       onCheckedChange={(checked) =>
-                        updateAmparo(index, "fecha_hasta_manual", checked)
+                        updateAmparoDateOverride(
+                          index,
+                          "fecha_hasta_manual",
+                          "fecha_hasta",
+                          checked,
+                          calculation.fecha_hasta,
+                        )
                       }
                       onValueChange={(value) =>
                         updateAmparo(index, "fecha_hasta", value)
+                      }
+                      warning={
+                        amparo.fecha_hasta_manual
+                          ? getRequiredDateInputIssue("Fecha fin manual", amparo.fecha_hasta)
+                          : null
                       }
                     />
                   </div>
@@ -1026,8 +1156,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           </button>
         </div>
       </section>
-      </fieldset>
-    </form>
+        </fieldset>
+      </form>
+    </div>
   );
 
   function updateAmparo(
@@ -1047,9 +1178,30 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
       ),
     );
   }
+
+  function updateAmparoDateOverride(
+    index: number,
+    flagKey: "fecha_desde_manual" | "fecha_hasta_manual",
+    dateKey: "fecha_desde" | "fecha_hasta",
+    checked: boolean,
+    calculatedDate: string | null,
+  ) {
+    setAmparos((items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              ...item,
+              [flagKey]: checked,
+              [dateKey]: checked ? calculatedDate ?? "" : "",
+            }
+          : item,
+      ),
+    );
+  }
 }
 
 function QuotePanel({
+  contract,
   quotes,
   activeIssuedQuote,
   contractState,
@@ -1058,7 +1210,9 @@ function QuotePanel({
   onGenerateQuote,
   onEmitQuote,
   onRevertQuote,
+  onRenewQuote,
 }: {
+  contract: Contrato;
   quotes: Cotizacion[];
   activeIssuedQuote: Cotizacion | null;
   contractState: string;
@@ -1067,6 +1221,7 @@ function QuotePanel({
   onGenerateQuote: () => void;
   onEmitQuote: (quoteId: string | number) => void;
   onRevertQuote: (quoteId: string | number) => void;
+  onRenewQuote: (fechaInicio: string, fechaFin: string) => void;
 }) {
   const activeSnapshot = activeIssuedQuote
     ? getQuoteSnapshot(activeIssuedQuote)
@@ -1075,6 +1230,34 @@ function QuotePanel({
   const referenceSnapshot = referenceQuote
     ? getQuoteSnapshot(referenceQuote)
     : null;
+  const [isRenewing, setIsRenewing] = useState(false);
+  const [renewalStart, setRenewalStart] = useState(
+    activeSnapshot?.contrato.fecha_fin
+      ? addDaysToDate(activeSnapshot.contrato.fecha_fin, 1)
+      : "",
+  );
+  const [renewalEnd, setRenewalEnd] = useState("");
+  const canRenew = Boolean(activeIssuedQuote && contract.renovable_automaticamente);
+
+  function openRenewalForm() {
+    setRenewalStart(
+      activeSnapshot?.contrato.fecha_fin
+        ? addDaysToDate(activeSnapshot.contrato.fecha_fin, 1)
+        : "",
+    );
+    setRenewalEnd("");
+    setIsRenewing(true);
+  }
+
+  function submitRenewal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!normalizeDateValue(renewalStart) || !normalizeDateValue(renewalEnd)) {
+      return;
+    }
+
+    onRenewQuote(renewalStart, renewalEnd);
+  }
 
   return (
     <section className="rounded-lg border border-[#d25b30]/20 bg-white p-6 shadow-sm">
@@ -1090,21 +1273,84 @@ function QuotePanel({
             Historial versionado y póliza base emitida.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onGenerateQuote}
-          disabled={!canGenerateQuote || quoteAction !== null}
-          className="h-11 rounded-lg bg-[#d25b30] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
-        >
-          {quoteAction === "generate"
-            ? "Generando..."
-            : contractState !== "validado"
-              ? "Validación requerida"
-              : activeIssuedQuote
-                ? "Póliza emitida"
-                : "Generar cotización PDF"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {canRenew ? (
+            <button
+              type="button"
+              onClick={openRenewalForm}
+              disabled={quoteAction !== null}
+              className="h-11 rounded-lg border border-[#d25b30] bg-white px-4 text-sm font-semibold text-[#b94d28] shadow-sm transition hover:bg-[#d25b30]/5 disabled:cursor-not-allowed disabled:border-neutral-300 disabled:text-neutral-400"
+            >
+              Prorrogar
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onGenerateQuote}
+            disabled={!canGenerateQuote || quoteAction !== null}
+            className="h-11 rounded-lg bg-[#d25b30] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+          >
+            {quoteAction === "generate"
+              ? "Generando..."
+              : contractState !== "validado"
+                ? "Validación requerida"
+                : activeIssuedQuote
+                  ? "Póliza emitida"
+                  : "Generar cotización PDF"}
+          </button>
+        </div>
       </div>
+
+      {isRenewing ? (
+        <form
+          onSubmit={submitRenewal}
+          className="mt-5 grid gap-4 rounded-lg border border-[#d25b30]/20 bg-[#d25b30]/5 p-4 md:grid-cols-[1fr_1fr_auto_auto]"
+        >
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-neutral-700">
+              Nueva vigencia desde
+            </span>
+            <input
+              type="date"
+              autoComplete="off"
+              value={renewalStart}
+              onChange={(event) => setRenewalStart(event.target.value)}
+              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+            />
+          </label>
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-neutral-700">
+              Nueva vigencia hasta
+            </span>
+            <input
+              type="date"
+              autoComplete="off"
+              value={renewalEnd}
+              onChange={(event) => setRenewalEnd(event.target.value)}
+              className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={
+              quoteAction !== null ||
+              !normalizeDateValue(renewalStart) ||
+              !normalizeDateValue(renewalEnd)
+            }
+            className="h-10 self-end rounded-lg bg-[#d25b30] px-4 text-sm font-semibold text-white transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+          >
+            {quoteAction === "renew" ? "Generando..." : "Generar prórroga"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsRenewing(false)}
+            disabled={quoteAction !== null}
+            className="h-10 self-end rounded-lg border border-neutral-300 bg-white px-4 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-50 disabled:cursor-not-allowed disabled:text-neutral-400"
+          >
+            Cancelar
+          </button>
+        </form>
+      ) : null}
 
       {activeIssuedQuote ? (
         <IssuedPolicySummary quote={activeIssuedQuote} snapshot={activeSnapshot} />
@@ -1325,6 +1571,7 @@ function QuoteCoverageTable({
   title: string;
 }) {
   const currency = snapshot.contrato.moneda;
+  const totalsByBlock = calculateQuoteTotalsByBlock(snapshot.amparos);
 
   return (
     <div className="mt-5 overflow-x-auto rounded-lg border border-neutral-200">
@@ -1407,16 +1654,44 @@ function QuoteCoverageTable({
         <tfoot className="bg-neutral-50 text-sm font-semibold text-neutral-950">
           <tr>
             <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
-              Totales
+              Total garantías / cumplimiento
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(snapshot.totales.prima_neta, currency)}
+              {formatCurrency(totalsByBlock.garantias.prima_neta, currency)}
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(snapshot.totales.iva, currency)}
+              {formatCurrency(totalsByBlock.garantias.iva, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.garantias.prima_total, currency)}
+            </td>
+          </tr>
+          <tr>
+            <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
+              Total responsabilidad civil
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.responsabilidad_civil.prima_neta, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.responsabilidad_civil.iva, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.responsabilidad_civil.prima_total, currency)}
+            </td>
+          </tr>
+          <tr>
+            <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
+              Total general
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.general.prima_neta, currency)}
+            </td>
+            <td className="border-t border-neutral-200 px-3 py-2 text-right">
+              {formatCurrency(totalsByBlock.general.iva, currency)}
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right text-[#d25b30]">
-              {formatCurrency(snapshot.totales.prima_total, currency)}
+              {formatCurrency(totalsByBlock.general.prima_total, currency)}
             </td>
           </tr>
         </tfoot>
@@ -1502,6 +1777,7 @@ function EditableField({
   source,
   type = "text",
   inputMode,
+  asDate = false,
 }: {
   label: string;
   value: string;
@@ -1509,7 +1785,19 @@ function EditableField({
   source?: SourceMeta;
   type?: "text" | "number" | "date";
   inputMode?: "decimal" | "numeric";
+  asDate?: boolean;
 }) {
+  if (asDate) {
+    return (
+      <DateTextField
+        label={label}
+        value={value}
+        onChange={onChange}
+        source={source}
+      />
+    );
+  }
+
   return (
     <label className="space-y-2">
       <span className="text-sm font-medium text-neutral-700">{label}</span>
@@ -1517,10 +1805,50 @@ function EditableField({
         type={type}
         step={type === "number" ? "any" : undefined}
         inputMode={inputMode}
+        autoComplete={type === "date" ? "off" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
       />
+      <SourceBlock source={source} />
+    </label>
+  );
+}
+
+function DateTextField({
+  label,
+  value,
+  onChange,
+  source,
+  warning,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  source?: SourceMeta;
+  warning?: string | null;
+}) {
+  return (
+    <label className="space-y-2">
+      <span className="text-sm font-medium text-neutral-700">{label}</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        autoComplete="off"
+        placeholder="DD/MM/YYYY"
+        value={formatDateInputValue(value)}
+        onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
+        className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+      />
+      {warning ? (
+        <span className="block text-xs font-medium leading-5 text-amber-700">
+          {warning}
+        </span>
+      ) : (
+        <span className="block text-xs leading-5 text-neutral-500">
+          Formato DD/MM/YYYY. El cálculo se actualiza solo con fecha completa.
+        </span>
+      )}
       <SourceBlock source={source} />
     </label>
   );
@@ -1532,12 +1860,16 @@ function EditableAmparoField({
   onChange,
   type = "text",
   inputMode,
+  help,
+  warning,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: "text" | "number" | "date";
   inputMode?: "decimal" | "numeric";
+  help?: string;
+  warning?: string | null;
 }) {
   return (
     <label className="space-y-2">
@@ -1546,10 +1878,20 @@ function EditableAmparoField({
         type={type}
         step={type === "number" ? "any" : undefined}
         inputMode={inputMode}
+        autoComplete={type === "date" ? "off" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
       />
+      {warning ? (
+        <span className="block text-xs font-medium leading-5 text-amber-700">
+          {warning}
+        </span>
+      ) : help ? (
+        <span className="block text-xs leading-5 text-neutral-500">
+          {help}
+        </span>
+      ) : null}
     </label>
   );
 }
@@ -1567,6 +1909,31 @@ function ReadOnlyMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ContractDateStatus({ form }: { form: ContractForm }) {
+  const issues = getContractDateIssues(form);
+  const hasValidStart = Boolean(normalizeDateValue(form.fecha_inicio));
+  const hasValidEnd = Boolean(normalizeDateValue(form.fecha_fin));
+
+  if (issues.length > 0) {
+    return (
+      <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+        {issues.join(" ")}
+      </div>
+    );
+  }
+
+  if (!hasValidStart && !hasValidEnd) {
+    return null;
+  }
+
+  return (
+    <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+      Fecha ingresada manualmente o confirmada. Se usará para recalcular las
+      vigencias y primas de los amparos que no tengan fechas manuales propias.
+    </div>
+  );
+}
+
 function ManualDateOverride({
   checkboxLabel,
   fieldLabel,
@@ -1574,6 +1941,7 @@ function ManualDateOverride({
   value,
   onCheckedChange,
   onValueChange,
+  warning,
 }: {
   checkboxLabel: string;
   fieldLabel: string;
@@ -1581,6 +1949,7 @@ function ManualDateOverride({
   value: string;
   onCheckedChange: (checked: boolean) => void;
   onValueChange: (value: string) => void;
+  warning?: string | null;
 }) {
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-3">
@@ -1598,17 +1967,14 @@ function ManualDateOverride({
         contrato.
       </p>
       {checked ? (
-        <label className="mt-3 block space-y-2">
-          <span className="text-sm font-medium text-neutral-700">
-            {fieldLabel}
-          </span>
-          <input
-            type="date"
+        <div className="mt-3">
+          <DateTextField
+            label={fieldLabel}
             value={value}
-            onChange={(event) => onValueChange(event.target.value)}
-            className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+            onChange={onValueChange}
+            warning={warning}
           />
-        </label>
+        </div>
       ) : null}
     </div>
   );
@@ -1786,6 +2152,12 @@ async function fetchContractDetail(contractId: string) {
   return body as DetailResponse;
 }
 
+function normalizeExecutiveForForm(value: string | null | undefined): string {
+  return value && EXECUTIVES.some((executive) => executive === value)
+    ? value
+    : DEFAULT_EXECUTIVE;
+}
+
 function contractToForm(
   contract: Contrato,
   extraction: AIExtraction | null,
@@ -1829,6 +2201,7 @@ function contractToForm(
     ),
     plazo_dias: plazoDias === null ? "" : String(plazoDias),
     plazo: contract.plazo ?? "",
+    renovable_automaticamente: contract.renovable_automaticamente ? "si" : "no",
     contratante: contract.contratante ?? "",
     contratante_nit: contract.contratante_nit ?? "",
     contratista: contract.contratista ?? "",
@@ -1842,7 +2215,6 @@ function amparoToEditable(
 ): EditableAmparo {
   const suggestedRate = findSuggestedRate(amparo.tipo_amparo, tasasReferencia);
   const tasa = amparo.tasa ?? suggestedRate;
-  const hasExplicitDates = amparo.base_vigencia === "fecha_explicita";
 
   return {
     id: amparo.id,
@@ -1867,10 +2239,10 @@ function amparoToEditable(
       amparo.base_vigencia === "otra"
         ? amparo.base_vigencia
         : "",
-    fecha_desde: hasExplicitDates ? normalizeDateValue(amparo.fecha_desde) ?? "" : "",
-    fecha_desde_manual: hasExplicitDates,
-    fecha_hasta: hasExplicitDates ? normalizeDateValue(amparo.fecha_hasta) ?? "" : "",
-    fecha_hasta_manual: hasExplicitDates,
+    fecha_desde: "",
+    fecha_desde_manual: false,
+    fecha_hasta: "",
+    fecha_hasta_manual: false,
     dias_adicionales:
       amparo.dias_adicionales === null ? "" : String(amparo.dias_adicionales),
     dias_vigencia:
@@ -1975,7 +2347,7 @@ function recalculateContractEndDate(
   form: ContractForm,
   force: boolean,
 ): ContractForm {
-  if (form.fecha_fin_manual && !force) {
+  if (form.fecha_fin_manual && !force && normalizeDateValue(form.fecha_fin)) {
     return form;
   }
 
@@ -2089,6 +2461,38 @@ function contractDependsOnActaInicio(
   );
 }
 
+function getRenewalExpirationAlert(contract: Contrato, amparos: Amparo[]) {
+  if (!contract.renovable_automaticamente) {
+    return null;
+  }
+
+  const today = getTodayDateOnly();
+  const complianceEndDate =
+    amparos.find((amparo) =>
+      normalizeText(amparo.tipo_amparo).includes("cumplimiento"),
+    )?.fecha_hasta ?? null;
+  const watchedDates = [
+    { label: "contrato base", value: contract.fecha_fin },
+    { label: "amparo de cumplimiento", value: complianceEndDate },
+  ];
+  const expiring = watchedDates
+    .map((item) => ({
+      ...item,
+      days: item.value ? diffDaysDateOnly(today, item.value) : null,
+    }))
+    .find((item) => item.days !== null && item.days >= 0 && item.days <= 30);
+
+  if (!expiring || expiring.days === null) {
+    return null;
+  }
+
+  return `Contrato renovable: ${expiring.label} vence en ${expiring.days} día${expiring.days === 1 ? "" : "s"}. Revise si corresponde prorrogar.`;
+}
+
+function getTodayDateOnly() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function normalizeForLooseMatch(value: string) {
   return value
     .normalize("NFD")
@@ -2111,7 +2515,142 @@ function decimalFromPercent(value: string | number | null | undefined) {
 
 function decimalFromRatePercent(value: string | number | null | undefined) {
   const parsed = numberOrNull(value);
-  return parsed === null ? null : parsed / 100;
+
+  if (parsed === null || parsed > MAX_RATE_PERCENT_INPUT) {
+    return null;
+  }
+
+  return parsed / 100;
+}
+
+const MAX_RATE_PERCENT_INPUT = 5;
+
+function getContractDateIssues(form: ContractForm) {
+  return [
+    getDateInputIssue("Fecha inicio", form.fecha_inicio),
+    getDateInputIssue("Fecha fin", form.fecha_fin),
+  ].filter((issue): issue is string => issue !== null);
+}
+
+function getManualDateIssues(amparos: EditableAmparo[]) {
+  return amparos.flatMap((amparo) => {
+    const issues = [];
+
+    if (amparo.fecha_desde_manual) {
+      const issue = getRequiredDateInputIssue(
+        `Fecha inicio manual de ${amparo.tipo_amparo || "amparo"}`,
+        amparo.fecha_desde,
+      );
+
+      if (issue) {
+        issues.push(issue);
+      }
+    }
+
+    if (amparo.fecha_hasta_manual) {
+      const issue = getRequiredDateInputIssue(
+        `Fecha fin manual de ${amparo.tipo_amparo || "amparo"}`,
+        amparo.fecha_hasta,
+      );
+
+      if (issue) {
+        issues.push(issue);
+      }
+    }
+
+    return issues;
+  });
+}
+
+function getDateInputIssue(label: string, value: string): string | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  if (!normalizeDateValue(value)) {
+    return `${label} está incompleta o no es válida; complete la fecha antes de recalcular.`;
+  }
+
+  return null;
+}
+
+function getRequiredDateInputIssue(label: string, value: string): string | null {
+  if (!value.trim()) {
+    return `${label} debe completarse para usarla como fecha manual.`;
+  }
+
+  return getDateInputIssue(label, value);
+}
+
+function formatDateInputValue(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  const normalized = normalizeDateValue(value);
+
+  if (normalized) {
+    const [year, month, day] = normalized.split("-");
+
+    return `${day}/${month}/${year}`;
+  }
+
+  return maskDateInput(value);
+}
+
+function normalizeDateInputChange(value: string) {
+  const masked = maskDateInput(value);
+  const normalized = normalizeDateValue(masked);
+
+  return normalized ?? masked;
+}
+
+function maskDateInput(value: string) {
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+
+  const digits = value.replace(/\D/g, "").slice(0, 8);
+
+  if (digits.length <= 2) {
+    return digits;
+  }
+
+  if (digits.length <= 4) {
+    return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  }
+
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+function getRateInputIssues(amparos: EditableAmparo[]) {
+  return amparos
+    .map((amparo) => getRateInputIssue(amparo.tasa))
+    .filter((issue): issue is string => issue !== null);
+}
+
+function getRateInputIssue(
+  value: string | number | null | undefined,
+): string | null {
+  const raw = String(value ?? "").trim();
+
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = numberOrNull(raw);
+
+  if (parsed === null) {
+    return "La tasa no es válida. Digite valores como 0.20, 0.18 o 0.25.";
+  }
+
+  if (parsed > MAX_RATE_PERCENT_INPUT) {
+    return "La tasa parece estar escrita como 20. Digite 0.20 para una tasa de 0,20%.";
+  }
+
+  return null;
 }
 
 function booleanOrNullFromChoice(value: ContractForm["base_calculo_incluye_iva"]) {
@@ -2228,6 +2767,21 @@ function getAdvanceBaseCriterion(
   return "No determinado";
 }
 
+function getAdvanceBaseOrigin(amparo: EditableAmparo, contract: ContractForm) {
+  const manualBase = numberOrNull(amparo.valor_base_calculo);
+  const contractBase = getCalculationBase(contract);
+
+  if (manualBase === null) {
+    return "Valor del contrato";
+  }
+
+  if (contractBase !== null && Math.abs(manualBase - contractBase) < 1) {
+    return "Valor del contrato";
+  }
+
+  return "Base específica revisada";
+}
+
 function formatRatePercent(value: number | null | undefined) {
   if (value === null || typeof value === "undefined") {
     return "";
@@ -2250,10 +2804,18 @@ function mergeReviewReasons(
     ...currentReasons,
   ]
     .filter((part): part is string => Boolean(part))
-    .filter(Boolean)
+    .flatMap(splitReviewReasons)
+    .filter((part, index, list) => list.indexOf(part) === index)
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function splitReviewReasons(value: string) {
+  return value
+    .split(/(?<=\.)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function stripStaleAutomaticReviewReasons(value: string) {
@@ -2290,7 +2852,9 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
       base_vigencia: amparo.base_vigencia || null,
       dias_adicionales: integerOrNull(amparo.dias_adicionales),
       fecha_desde: amparo.fecha_desde_manual ? amparo.fecha_desde || null : null,
+      fecha_desde_manual: amparo.fecha_desde_manual,
       fecha_hasta: amparo.fecha_hasta_manual ? amparo.fecha_hasta || null : null,
+      fecha_hasta_manual: amparo.fecha_hasta_manual,
       fuente_texto: amparo.fuente_texto || null,
       fuente_pagina: integerOrNull(amparo.fuente_pagina),
       subamparos: amparo.subamparos,

@@ -3,7 +3,8 @@ import {
   normalizeCoverage,
   type CoverageSubamparo,
 } from "@/lib/coverage-calculations";
-import type { Database, Json } from "@/lib/database.types";
+import { addDaysToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
+import type { Database, Json, ModificacionContractual } from "@/lib/database.types";
 import { getServerEnv } from "@/lib/env";
 import {
   getExtractionValue,
@@ -15,6 +16,13 @@ import {
   normalizeNumber,
   normalizeText,
 } from "@/lib/normalizers";
+import {
+  NON_TERMINAL_AMENDMENT_STATES,
+  activeStateToJson,
+  calculateAmendmentLiquidation,
+  getActiveStateFromEndorsements,
+  liquidationToJson,
+} from "@/lib/amendments";
 import {
   buildContractExtractionContext,
   countLowConfidenceFields,
@@ -265,6 +273,840 @@ export async function processContract(contratoId: DbInt8) {
 
     await insertErrorExtractionLog(context, originalMessage);
   }
+}
+
+export async function processAmendmentDocument({
+  contratoId,
+  documentoId,
+}: {
+  contratoId: DbInt8;
+  documentoId?: DbInt8 | null;
+}) {
+  const supabase = getSupabaseAdmin();
+  const documentQuery = supabase
+    .from("documentos")
+    .select("*")
+    .eq("contrato_id", contratoId)
+    .eq("tipo_documento", "otrosi")
+    .order("fecha_carga", { ascending: false })
+    .limit(1);
+  const { data: documents, error: documentError } = documentoId
+    ? await supabase
+        .from("documentos")
+        .select("*")
+        .eq("id", documentoId)
+        .eq("contrato_id", contratoId)
+        .eq("tipo_documento", "otrosi")
+        .limit(1)
+    : await documentQuery;
+  const documento = documents?.[0] ?? null;
+
+  if (documentError || !documento) {
+    throw new Error(
+      `No se encontró el documento de otrosí: ${documentError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  const { data: activeBaseQuote, error: activeBaseQuoteError } = await supabase
+    .from("cotizaciones")
+    .select("*")
+    .eq("contrato_id", contratoId)
+    .eq("estado", "emitida")
+    .maybeSingle();
+
+  if (activeBaseQuoteError) {
+    throw new Error(
+      `Fallo al validar póliza base emitida: ${activeBaseQuoteError.message}`,
+    );
+  }
+
+  if (!activeBaseQuote) {
+    throw new Error(
+      "Solo se puede procesar un otrosí cuando existe una póliza base emitida activa.",
+    );
+  }
+
+  const { data: currentModification, error: currentModificationError } =
+    await supabase
+      .from("modificaciones_contractuales")
+      .select("*")
+      .eq("contrato_id", contratoId)
+      .eq("documento_id", documento.id)
+      .maybeSingle();
+
+  if (currentModificationError) {
+    throw new Error(
+      `Fallo al consultar registro cargado del otrosí: ${currentModificationError.message}`,
+    );
+  }
+
+  let pendingQuery = supabase
+    .from("modificaciones_contractuales")
+    .select("id,numero_modificacion,estado,documento_id")
+    .eq("contrato_id", contratoId)
+    .in("estado", [...NON_TERMINAL_AMENDMENT_STATES]);
+
+  if (currentModification) {
+    pendingQuery = pendingQuery.neq("id", currentModification.id);
+  }
+
+  const { data: pendingModifications, error: pendingError } =
+    await pendingQuery.limit(1);
+
+  if (pendingError) {
+    throw new Error(
+      `Fallo al validar secuencia de otrosíes: ${pendingError.message}`,
+    );
+  }
+
+  const pendingModification = pendingModifications?.[0] ?? null;
+
+  if (pendingModification) {
+    throw new Error(
+      `Ya existe un otrosí pendiente (${pendingModification.numero_modificacion ?? pendingModification.id}). Debe emitirse o eliminarse antes de procesar otro.`,
+    );
+  }
+
+  if (currentModification) {
+    const { error: processingStateError } = await supabase
+      .from("modificaciones_contractuales")
+      .update({
+        estado: "procesando",
+        actualizado_en: new Date().toISOString(),
+      })
+      .eq("id", currentModification.id);
+
+    if (processingStateError) {
+      throw new Error(
+        `Fallo al marcar otrosí como procesando: ${processingStateError.message}`,
+      );
+    }
+  }
+
+  const [
+    { data: contractData, error: contractError },
+    { data: amparos, error: amparosError },
+    { data: adjustmentQuotes, error: adjustmentQuotesError },
+    { data: latestModifications, error: latestModificationError },
+  ] = await Promise.all([
+    supabase
+      .from("contratos")
+      .select("*")
+      .eq("id", contratoId)
+      .single(),
+    supabase
+      .from("amparos")
+      .select("*")
+      .eq("contrato_id", contratoId)
+      .is("modificacion_id", null)
+      .order("creado_en", { ascending: true }),
+    supabase
+      .from("cotizaciones_ajuste")
+      .select("*")
+      .eq("contrato_id", contratoId)
+      .eq("estado", "endoso_emitido")
+      .order("fecha_emision", { ascending: true }),
+    supabase
+      .from("modificaciones_contractuales")
+      .select("secuencia")
+      .eq("contrato_id", contratoId)
+      .order("secuencia", { ascending: false, nullsFirst: false })
+      .limit(1),
+  ]);
+
+  if (contractError || !contractData) {
+    throw new Error(
+      `No se encontró el contrato base del otrosí: ${contractError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  if (amparosError) {
+    throw new Error(`Fallo al consultar amparos base: ${amparosError.message}`);
+  }
+
+  if (adjustmentQuotesError) {
+    throw new Error(
+      `Fallo al consultar otrosíes emitidos: ${adjustmentQuotesError.message}`,
+    );
+  }
+
+  if (latestModificationError) {
+    throw new Error(
+      `Fallo al consultar secuencia de otrosíes: ${latestModificationError.message}`,
+    );
+  }
+
+  const sequence =
+    currentModification?.secuencia ??
+    (latestModifications?.[0]?.secuencia ?? 0) + 1;
+
+  const activeState = getActiveStateFromEndorsements({
+    baseQuote: activeBaseQuote,
+    amparos: amparos ?? [],
+    adjustmentQuotes: adjustmentQuotes ?? [],
+  });
+  const previousEndorsement = (adjustmentQuotes ?? []).at(-1) ?? null;
+  const { data: storedFile, error: downloadError } = await supabase.storage
+    .from(documento.storage_bucket)
+    .download(documento.storage_path);
+
+  if (downloadError || !storedFile) {
+    throw new Error(
+      `Fallo al leer el PDF del otrosí desde Supabase Storage: ${downloadError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  const pdfBuffer = await storedFile.arrayBuffer();
+  const estimatedPageCount = estimatePdfPageCount(pdfBuffer);
+  const extractedPages = await extractPdfTextByPage(pdfBuffer);
+  const extractedText = stringifyPages(extractedPages);
+
+  assertDocumentIntelligencePageCoverage({
+    estimatedPageCount,
+    extractedPageCount: extractedPages.length,
+  });
+
+  const extractionContext = buildContractExtractionContext(extractedPages);
+  const env = getServerEnv();
+
+  logExtractionContextForDevelopment({
+    totalPages: extractedPages.length,
+    estimatedPageCount,
+    fullText: extractedText,
+    openAiContext: extractionContext.text,
+    openAiPages: extractionContext.pageNumbers,
+    pageDetails: extractionContext.pageDetails,
+    truncated: extractionContext.truncated,
+    documentType: documento.tipo_documento,
+    fileName: documento.nombre_archivo,
+  });
+  logExtractionAttemptForDevelopment({
+    deployment: env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
+    phase: "amendment_start",
+  });
+
+  const rawResult = await extractStructuredAmendment(
+    env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
+    extractionContext.text,
+  );
+  const result = {
+    ...rawResult,
+    extraction: applyDeterministicAmendmentFallbacks(
+      rawResult.extraction,
+      extractedText,
+    ),
+  };
+
+  logAmendmentResultForDevelopment(result);
+
+  await insertAmendmentExtractionLog({
+    contractId: contratoId,
+    documentId: documento.id,
+    extractedText,
+    result,
+    resultado: getAmendmentExtractionLogResult(result.extraction),
+  });
+
+  const now = new Date().toISOString();
+  const basePayload = mapAmendmentToModification(
+    result.extraction,
+    contratoId,
+    documento.id,
+  );
+  const previousContractValue =
+    basePayload.valor_contrato_anterior ??
+    activeState.contrato.base_calculo_amparos ??
+    activeState.contrato.valor_contrato;
+  const addedValue = basePayload.valor_adicion ?? 0;
+  const draftModification = {
+    ...basePayload,
+    id: currentModification?.id ?? 0,
+    secuencia: sequence,
+    valor_contrato_anterior: previousContractValue,
+    valor_adicion: addedValue,
+    valor_contrato_acumulado:
+      basePayload.valor_contrato_acumulado ??
+      (previousContractValue === null ? null : previousContractValue + addedValue),
+    fecha_desde: basePayload.fecha_desde ?? activeState.contrato.fecha_fin,
+  } as ModificacionContractual;
+  const liquidation = calculateAmendmentLiquidation({
+    activeState,
+    modification: draftModification,
+    generatedAt: now,
+  });
+  const alertas = [
+    ...result.extraction.alertas,
+    result.extraction.impuesto_timbre.valor
+      ? `Impuesto de timbre informado: ${result.extraction.impuesto_timbre.valor}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  const persistedPayload = {
+    ...basePayload,
+    secuencia: sequence,
+    cotizacion_base_id: activeBaseQuote.id,
+    endoso_anterior_id: previousEndorsement?.id ?? null,
+    estado: "pendiente_revision",
+    valor_contrato_anterior: draftModification.valor_contrato_anterior,
+    valor_adicion: draftModification.valor_adicion,
+    valor_contrato_acumulado: draftModification.valor_contrato_acumulado,
+    fecha_desde: draftModification.fecha_desde,
+    liquidacion: liquidationToJson(liquidation),
+    snapshot_vigente_anterior: activeStateToJson(activeState),
+    snapshot_vigente_resultante: null,
+    alertas: alertas as Json,
+    campos_no_encontrados: result.extraction.campos_no_encontrados as Json,
+    actualizado_en: now,
+  };
+  const { data: modification, error: modificationError } = currentModification
+    ? await supabase
+        .from("modificaciones_contractuales")
+        .update(persistedPayload)
+        .eq("id", currentModification.id)
+        .select("*")
+        .single()
+    : await supabase
+        .from("modificaciones_contractuales")
+        .insert(persistedPayload)
+        .select("*")
+        .single();
+
+  if (modificationError || !modification) {
+    throw new Error(
+      `Fallo al guardar el otrosí revisable: ${modificationError?.message ?? "sin detalle"}`,
+    );
+  }
+
+  return modification;
+}
+
+function applyDeterministicAmendmentFallbacks(
+  extraction: AmendmentExtraction,
+  extractedText: string,
+): AmendmentExtraction {
+  const signatureDate =
+    findDocumentSignatureDate(extractedText) ??
+    findContextualDate(extractedText, [
+      "fecha de firma",
+      "firmado",
+      "firma",
+      "suscrito",
+      "suscriben",
+      "suscripcion",
+    ]);
+  const extensionRange = findExtensionRange(extractedText);
+  const newEndDate =
+    findNewEndDate(extractedText) ??
+    extensionRange?.end ??
+    findContextualDate(extractedText, [
+      "nueva fecha de terminacion",
+      "fecha de terminacion",
+      "hasta el",
+      "hasta",
+    ]);
+  const previousEndDate =
+    findPreviousEndDate(extractedText) ??
+    extensionRange?.previousEnd ??
+    findContextualDate(extractedText, [
+      "fecha fin anterior",
+      "fecha de terminacion anterior",
+      "fecha final anterior",
+      "vence",
+      "vigente hasta",
+    ]);
+  const rangeDays =
+    previousEndDate && newEndDate
+      ? diffDaysDateOnly(previousEndDate, newEndDate)
+      : null;
+  const extensionDays =
+    findExtensionDays(extractedText) ??
+    (rangeDays !== null && rangeDays > 0 ? rangeDays : null);
+  const parsedAddedValue = findAddedValue(extractedText);
+  const noAddedValue = hasNoAddedValueSignal(extractedText);
+  const hasAddedValue =
+    parsedAddedValue !== null ||
+    (typeof extraction.valor_adicion.valor === "number" &&
+      extraction.valor_adicion.valor > 0);
+  const requiresGuaranteeAdjustment = hasGuaranteeAdjustmentSignal(extractedText);
+  const hasProrroga = hasProrrogaSignal(extractedText);
+  const hasObjectChange = hasObjectChangeSignal(extractedText);
+  const objectSummary = findObjectChangeSummary(extractedText);
+  const modificationType = buildModificationTypeLabel({
+    hasAddedValue,
+    hasObjectChange,
+    hasProrroga,
+    noAddedValue,
+  });
+
+  return {
+    ...extraction,
+    fecha_firma: signatureDate
+      ? deterministicDateValue(signatureDate, "fecha de firma del otrosí")
+      : extraction.fecha_firma,
+    fecha_desde: previousEndDate
+      ? deterministicDateValue(
+          previousEndDate,
+          "fecha fin anterior derivada del periodo de prórroga",
+        )
+      : extraction.fecha_desde,
+    fecha_hasta: newEndDate
+      ? deterministicDateValue(
+          newEndDate,
+          "nueva fecha fin derivada del periodo de prórroga",
+        )
+      : extraction.fecha_hasta,
+    dias_prorroga:
+      extensionDays !== null
+        ? {
+            valor: extensionDays,
+            confianza: "media",
+            pagina: extraction.dias_prorroga.pagina,
+            fuente: "Días de prórroga derivados determinísticamente del texto.",
+        }
+        : extraction.dias_prorroga,
+    valor_adicion:
+      parsedAddedValue !== null
+        ? {
+            valor: parsedAddedValue,
+            confianza: "media",
+            pagina: extraction.valor_adicion.pagina,
+            fuente: "Valor adicionado derivado determinísticamente del texto del otrosí.",
+          }
+        : noAddedValue && extraction.valor_adicion.valor === null
+        ? {
+            valor: 0,
+            confianza: "media",
+            pagina: extraction.valor_adicion.pagina,
+            fuente: "El otrosí indica prórroga sin adición de valor.",
+        }
+        : extraction.valor_adicion,
+    tipo_modificacion:
+      modificationType
+        ? {
+            valor: modificationType,
+            confianza: "media",
+            pagina: extraction.tipo_modificacion.pagina,
+            fuente: "Tipo derivado por señales de adición, prórroga y cambio de objeto.",
+          }
+        : extraction.tipo_modificacion,
+    objeto_nuevo:
+      objectSummary && extraction.objeto_nuevo.valor === null
+        ? {
+            valor: objectSummary,
+            confianza: "media",
+            pagina: extraction.objeto_nuevo.pagina,
+            fuente: "Objeto ajustado derivado determinísticamente del texto del otrosí.",
+          }
+        : extraction.objeto_nuevo,
+    requiere_ajuste_garantias: requiresGuaranteeAdjustment
+      ? {
+          valor: true,
+          confianza: "media",
+          pagina: extraction.requiere_ajuste_garantias.pagina,
+          fuente: "El otrosí menciona ajuste de garantías o pólizas.",
+        }
+      : extraction.requiere_ajuste_garantias,
+    alertas: [
+      ...extraction.alertas,
+      signatureDate ? "fecha_firma ajustada por lectura determinística del otrosí." : null,
+      extensionRange
+        ? "Fechas de prórroga ajustadas por lectura determinística del periodo del otrosí."
+        : null,
+      parsedAddedValue !== null
+        ? "Valor adicionado ajustado por lectura determinística del otrosí."
+        : null,
+      noAddedValue ? "Valor adicionado interpretado como cero por prórroga sin adición." : null,
+      objectSummary ? "Objeto nuevo ajustado por lectura determinística del otrosí." : null,
+    ].filter((item): item is string => Boolean(item)),
+  };
+}
+
+function deterministicDateValue(value: string, source: string) {
+  return {
+    valor: value,
+    confianza: "media" as const,
+    pagina: null,
+    fuente: source,
+  };
+}
+
+type DateCandidate = {
+  iso: string;
+  index: number;
+};
+
+function findDocumentSignatureDate(text: string) {
+  const candidates = extractDateCandidates(text);
+  const signatureCandidates = candidates.filter((candidate) => {
+    const before = normalizeForAmendmentSearch(
+      text.slice(Math.max(0, candidate.index - 360), candidate.index),
+    );
+
+    return (
+      (before.includes("para constancia") ||
+        before.includes("se suscribe") ||
+        before.includes("suscribe por las partes") ||
+        before.includes("en la ciudad")) &&
+      !before.includes("firmado digitalmente")
+    );
+  });
+
+  return signatureCandidates.at(-1)?.iso ?? null;
+}
+
+function findPreviousEndDate(text: string) {
+  const candidates = extractDateCandidates(text);
+
+  for (const candidate of candidates) {
+    const before = normalizeForAmendmentSearch(
+      text.slice(Math.max(0, candidate.index - 220), candidate.index),
+    );
+
+    if (
+      (before.includes("plazo de terminacion") ||
+        before.includes("fecha de terminacion") ||
+        before.includes("fecha fin anterior") ||
+        before.includes("terminacion era") ||
+        before.includes("terminacion es") ||
+        before.includes("vence") ||
+        before.includes("vigente hasta")) &&
+      !before.includes("nueva fecha") &&
+      !before.includes("ampliar") &&
+      !before.includes("extiende hasta")
+    ) {
+      return candidate.iso;
+    }
+  }
+
+  return null;
+}
+
+function findNewEndDate(text: string) {
+  const candidates = extractDateCandidates(text);
+
+  for (const candidate of candidates) {
+    const before = normalizeForAmendmentSearch(
+      text.slice(Math.max(0, candidate.index - 120), candidate.index),
+    );
+    const segment = normalizeForAmendmentSearch(
+      text.slice(Math.max(0, candidate.index - 220), candidate.index + 120),
+    );
+
+    if (
+      before.includes("hasta") &&
+      (segment.includes("ampliar") ||
+        segment.includes("amplia") ||
+        segment.includes("extiende") ||
+        segment.includes("prorroga") ||
+        segment.includes("duracion"))
+    ) {
+      return candidate.iso;
+    }
+  }
+
+  return null;
+}
+
+function findContextualDate(text: string, contextTerms: string[]) {
+  const candidates = extractDateCandidates(text);
+
+  for (const candidate of candidates) {
+    const windowText = normalizeForAmendmentSearch(
+      text.slice(Math.max(0, candidate.index - 180), candidate.index + 180),
+    );
+
+    if (contextTerms.some((term) => windowText.includes(term))) {
+      return candidate.iso;
+    }
+  }
+
+  return null;
+}
+
+function findExtensionRange(text: string) {
+  const previousEndDate = findPreviousEndDate(text);
+  const newEndDate = findNewEndDate(text);
+
+  if (
+    previousEndDate &&
+    newEndDate &&
+    diffDaysDateOnly(previousEndDate, newEndDate) !== null &&
+    diffDaysDateOnly(previousEndDate, newEndDate)! > 0
+  ) {
+    return {
+      start: previousEndDate,
+      previousEnd: previousEndDate,
+      end: newEndDate,
+    };
+  }
+
+  const candidates = extractDateCandidates(text);
+  const explicitDays = findExtensionDays(text);
+
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < candidates.length;
+      rightIndex += 1
+    ) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      const distance = diffDaysDateOnly(left.iso, right.iso);
+
+      if (distance === null || distance <= 0) {
+        continue;
+      }
+
+      const segment = normalizeForAmendmentSearch(
+        text.slice(
+          Math.max(0, left.index - 120),
+          Math.min(text.length, right.index + 120),
+        ),
+      );
+      const looksLikeRange =
+        hasProrrogaSignal(segment) &&
+        segment.includes("hasta") &&
+        (segment.includes("desde") ||
+          segment.includes("inicio") ||
+          segment.includes("inicia") ||
+          segment.includes("a partir"));
+      const matchesExplicitDays =
+        explicitDays !== null &&
+        (distance === explicitDays || distance + 1 === explicitDays);
+
+      if (!looksLikeRange && !matchesExplicitDays) {
+        continue;
+      }
+
+      const previousEnd = matchesExplicitDays && distance + 1 === explicitDays
+        ? addDaysToDateOnly(left.iso, -1)
+        : left.iso;
+
+      return {
+        start: left.iso,
+        previousEnd: previousEnd ?? left.iso,
+        end: right.iso,
+      };
+    }
+  }
+
+  return null;
+}
+
+function findExtensionDays(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+  const numericMatch = normalized.match(
+    /(?:prorroga|plazo|termino|duracion)[\s\S]{0,80}?(\d{1,3})\s*dias/,
+  );
+
+  if (numericMatch) {
+    return Number(numericMatch[1]);
+  }
+
+  const parenthesizedMatch = normalized.match(/\((\d{1,3})\)\s*dias/);
+
+  if (parenthesizedMatch) {
+    return Number(parenthesizedMatch[1]);
+  }
+
+  return null;
+}
+
+function extractDateCandidates(text: string): DateCandidate[] {
+  const candidates: DateCandidate[] = [];
+  const numericPattern = /\b(\d{1,2})[\/.-](\d{1,2})[\/.-](20\d{2})\b/g;
+  const monthNames =
+    "enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre";
+  const monthPattern =
+    new RegExp(
+      `\\(?\\b(\\d{1,2})\\)?(?:\\s+de)?\\s+(${monthNames})\\s+(?:de\\s+)?(20\\d{2})\\b`,
+      "gi",
+    );
+  const writtenYearMonthPattern = new RegExp(
+    `\\(?(\\d{1,2})\\)?\\s+de\\s+(${monthNames})\\s+del?\\s+año\\s+[^()\\d]{0,80}\\((20\\d{2})\\)`,
+    "gi",
+  );
+
+  function pushCandidate(iso: string | null, index: number) {
+    if (
+      iso &&
+      !candidates.some(
+        (candidate) => candidate.iso === iso && candidate.index === index,
+      )
+    ) {
+      candidates.push({ iso, index });
+    }
+  }
+
+  for (const match of text.matchAll(numericPattern)) {
+    pushCandidate(
+      toDateOnly(Number(match[3]), Number(match[2]), Number(match[1])),
+      match.index ?? 0,
+    );
+  }
+
+  for (const match of text.matchAll(monthPattern)) {
+    const month = monthNumber(match[2]);
+    pushCandidate(
+      toDateOnly(Number(match[3]), month, Number(match[1])),
+      match.index ?? 0,
+    );
+  }
+
+  for (const match of text.matchAll(writtenYearMonthPattern)) {
+    const month = monthNumber(match[2]);
+    pushCandidate(
+      toDateOnly(Number(match[3]), month, Number(match[1])),
+      match.index ?? 0,
+    );
+  }
+
+  return candidates.sort((left, right) => left.index - right.index);
+}
+
+function findAddedValue(text: string) {
+  const matches = [
+    ...text.matchAll(
+      /(?:adiciona|adicionar|adicion|adicionado)[\s\S]{0,240}?\$\s*([\d.,]+)/gi,
+    ),
+  ];
+  const value = matches.at(-1)?.[1] ?? null;
+
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value.replace(/\./g, "").replace(",", "."));
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toDateOnly(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function monthNumber(value: string) {
+  const normalized = normalizeForAmendmentSearch(value);
+  const months: Record<string, number> = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    setiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+  };
+
+  return months[normalized] ?? 0;
+}
+
+function hasNoAddedValueSignal(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+
+  return (
+    normalized.includes("sin adicion de valor") ||
+    normalized.includes("sin adicion") ||
+    normalized.includes("no adiciona valor") ||
+    normalized.includes("no genera adicion") ||
+    normalized.includes("no genera valor adicional")
+  );
+}
+
+function hasGuaranteeAdjustmentSignal(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+
+  return (
+    normalized.includes("garantia") ||
+    normalized.includes("garantias") ||
+    normalized.includes("poliza") ||
+    normalized.includes("polizas")
+  );
+}
+
+function hasProrrogaSignal(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+
+  return (
+    normalized.includes("prorroga") ||
+    normalized.includes("prorrogar") ||
+    normalized.includes("plazo") ||
+    normalized.includes("termino")
+  );
+}
+
+function hasObjectChangeSignal(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+
+  return (
+    normalized.includes("modificar la clausula primera") ||
+    normalized.includes("modificar el objeto") ||
+    normalized.includes("cambio de objeto") ||
+    normalized.includes("objeto del contrato") ||
+    normalized.includes("utilizando cinco") ||
+    normalized.includes("utilizando 5")
+  );
+}
+
+function findObjectChangeSummary(text: string) {
+  const normalized = normalizeForAmendmentSearch(text);
+
+  if (
+    (normalized.includes("utilizando cinco") || normalized.includes("utilizando 5")) &&
+    (normalized.includes("seis") || normalized.includes("(6)") || normalized.includes("6 gruas"))
+  ) {
+    return "Prestación del servicio con cinco grúas, en lugar de seis.";
+  }
+
+  return null;
+}
+
+function buildModificationTypeLabel({
+  hasAddedValue,
+  hasObjectChange,
+  hasProrroga,
+  noAddedValue,
+}: {
+  hasAddedValue: boolean;
+  hasObjectChange: boolean;
+  hasProrroga: boolean;
+  noAddedValue: boolean;
+}) {
+  if (hasProrroga && noAddedValue && !hasAddedValue && !hasObjectChange) {
+    return "Prórroga de plazo sin adición de valor";
+  }
+
+  const parts = [
+    hasAddedValue ? "Adición de valor" : null,
+    hasProrroga ? "prórroga de plazo" : null,
+    hasObjectChange ? "cambio de objeto" : null,
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.length > 0 ? parts.join(" + ") : null;
+}
+
+function normalizeForAmendmentSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function saveStructuredExtraction(
@@ -739,12 +1581,16 @@ function mapAmendmentToModification(
     documento_id: documentoId,
     numero_modificacion: normalizeText(extraction.numero_modificacion.valor),
     tipo_modificacion: normalizeText(extraction.tipo_modificacion.valor),
+    valor_contrato_anterior: normalizeNumber(
+      extraction.valor_contrato_anterior.valor,
+    ),
     valor_adicion: normalizeNumber(extraction.valor_adicion.valor),
     valor_contrato_acumulado: normalizeNumber(
       extraction.valor_contrato_acumulado.valor,
     ),
     fecha_desde: normalizeDate(extraction.fecha_desde.valor),
     fecha_hasta: normalizeDate(extraction.fecha_hasta.valor),
+    fecha_firma: normalizeDate(extraction.fecha_firma.valor),
     dias_prorroga: normalizeInteger(extraction.dias_prorroga.valor),
     fuente_pagina:
       extraction.fuente_pagina ??
@@ -757,6 +1603,9 @@ function mapAmendmentToModification(
     confianza: extraction.confianza,
     requiere_revision: extraction.requiere_revision || Boolean(reviewReasons),
     motivo_revision: reviewReasons || null,
+    objeto_nuevo: normalizeText(extraction.objeto_nuevo.valor),
+    requiere_ajuste_garantias:
+      extraction.requiere_ajuste_garantias.valor ?? true,
   };
 }
 

@@ -50,6 +50,7 @@ export type Database = {
           fecha_inicio: string | null;
           fecha_fin: string | null;
           plazo: string | null;
+          renovable_automaticamente: boolean;
           contratante: string | null;
           contratante_nit: string | null;
           contratista: string | null;
@@ -77,6 +78,7 @@ export type Database = {
           fecha_inicio?: string | null;
           fecha_fin?: string | null;
           plazo?: string | null;
+          renovable_automaticamente?: boolean;
           contratante?: string | null;
           contratante_nit?: string | null;
           contratista?: string | null;
@@ -243,10 +245,19 @@ export type Database = {
           objeto_anterior: string | null;
           objeto_nuevo: string | null;
           requiere_ajuste_garantias: boolean;
+          secuencia: number | null;
+          cotizacion_base_id: DbInt8 | null;
+          endoso_anterior_id: DbInt8 | null;
+          snapshot_vigente_anterior: Json | null;
+          snapshot_vigente_resultante: Json | null;
+          alertas: Json;
+          campos_no_encontrados: Json;
           liquidacion: Json;
           alerta_secuencia: string | null;
           aplicada_en: string | null;
           aplicado_por: string | null;
+          fecha_anulacion: string | null;
+          motivo_anulacion: string | null;
           creado_en: string;
           actualizado_en: string;
         },
@@ -272,10 +283,19 @@ export type Database = {
           objeto_anterior?: string | null;
           objeto_nuevo?: string | null;
           requiere_ajuste_garantias?: boolean;
+          secuencia?: number | null;
+          cotizacion_base_id?: DbInt8 | null;
+          endoso_anterior_id?: DbInt8 | null;
+          snapshot_vigente_anterior?: Json | null;
+          snapshot_vigente_resultante?: Json | null;
+          alertas?: Json;
+          campos_no_encontrados?: Json;
           liquidacion?: Json;
           alerta_secuencia?: string | null;
           aplicada_en?: string | null;
           aplicado_por?: string | null;
+          fecha_anulacion?: string | null;
+          motivo_anulacion?: string | null;
           creado_en?: string;
           actualizado_en?: string;
         }
@@ -342,6 +362,71 @@ export type Database = {
           actualizado_en?: string;
         }
       >;
+      cotizaciones_ajuste: TableDefinition<
+        {
+          id: DbInt8;
+          contrato_id: DbInt8;
+          modificacion_id: DbInt8;
+          numero_cotizacion: string;
+          version: number;
+          estado: string;
+          snapshot: Json;
+          total_prima_neta: number | null;
+          total_iva: number | null;
+          total_prima: number | null;
+          pdf_bucket: string | null;
+          pdf_path: string | null;
+          pdf_nombre_archivo: string | null;
+          fecha_generacion: string;
+          fecha_emision: string | null;
+          fecha_reversion: string | null;
+          motivo_reversion: string | null;
+          creado_en: string;
+          actualizado_en: string;
+        },
+        {
+          id?: DbInt8;
+          contrato_id: DbInt8;
+          modificacion_id: DbInt8;
+          numero_cotizacion: string;
+          version: number;
+          estado?: string;
+          snapshot: Json;
+          total_prima_neta?: number | null;
+          total_iva?: number | null;
+          total_prima?: number | null;
+          pdf_bucket?: string | null;
+          pdf_path?: string | null;
+          pdf_nombre_archivo?: string | null;
+          fecha_generacion?: string;
+          fecha_emision?: string | null;
+          fecha_reversion?: string | null;
+          motivo_reversion?: string | null;
+          creado_en?: string;
+          actualizado_en?: string;
+        },
+        {
+          id?: DbInt8;
+          contrato_id?: DbInt8;
+          modificacion_id?: DbInt8;
+          numero_cotizacion?: string;
+          version?: number;
+          estado?: string;
+          snapshot?: Json;
+          total_prima_neta?: number | null;
+          total_iva?: number | null;
+          total_prima?: number | null;
+          pdf_bucket?: string | null;
+          pdf_path?: string | null;
+          pdf_nombre_archivo?: string | null;
+          fecha_generacion?: string;
+          fecha_emision?: string | null;
+          fecha_reversion?: string | null;
+          motivo_reversion?: string | null;
+          creado_en?: string;
+          actualizado_en?: string;
+        }
+      >;
       tasas_referencia: TableDefinition<{
         id: DbInt8;
         aseguradora: string;
@@ -368,5 +453,7 @@ export type Amparo = Database["public"]["Tables"]["amparos"]["Row"];
 export type ModificacionContractual =
   Database["public"]["Tables"]["modificaciones_contractuales"]["Row"];
 export type Cotizacion = Database["public"]["Tables"]["cotizaciones"]["Row"];
+export type CotizacionAjuste =
+  Database["public"]["Tables"]["cotizaciones_ajuste"]["Row"];
 export type TasaReferencia =
   Database["public"]["Tables"]["tasas_referencia"]["Row"];

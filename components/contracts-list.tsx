@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CONTRACT_STATES, EXECUTIVES } from "@/lib/constants";
+import { diffDaysDateOnly } from "@/lib/date-only";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 
@@ -12,6 +13,7 @@ type ContractListRecord = {
   valor_contrato: number | null;
   moneda: string;
   fecha_fin: string | null;
+  renovable_automaticamente: boolean;
   contratista: string | null;
   estado: string;
   mensaje_error: string | null;
@@ -202,42 +204,64 @@ export function ContractsList() {
           </div>
         ) : (
           <div className="divide-y divide-neutral-100">
-            {contracts.map((contract) => (
-              <Link
-                key={contract.id}
-                href={`/contratos/${contract.id}`}
-                className="grid grid-cols-12 gap-2 px-4 py-4 text-sm transition hover:bg-neutral-50"
-              >
-                <div className="col-span-12 md:col-span-4">
-                  <p className="font-semibold text-neutral-950">
-                    {contract.clientes.nombre}
-                  </p>
-                  <p className="mt-1 text-neutral-500">
-                    {contract.clientes.nit} · {contract.clientes.ejecutivo}
-                  </p>
-                </div>
-                <div className="col-span-6 md:col-span-2">
-                  <p className="font-medium text-neutral-800">
-                    {contract.numero_contrato ?? "Sin número"}
-                  </p>
-                  <p className="mt-1 truncate text-neutral-500">
-                    {contract.contratista ?? "Sin contratista"}
-                  </p>
-                </div>
-                <div className="col-span-6 md:col-span-2">
-                  {formatCurrency(contract.valor_contrato, contract.moneda)}
-                </div>
-                <div className="col-span-6 md:col-span-2">
-                  {formatDate(contract.fecha_fin)}
-                </div>
-                <div className="col-span-6 md:col-span-2">
-                  <StatusBadge state={contract.estado} />
-                </div>
-              </Link>
-            ))}
+            {contracts.map((contract) => {
+              const isRenewableExpiring = isExpiringRenewableContract(contract);
+
+              return (
+                <Link
+                  key={contract.id}
+                  href={`/contratos/${contract.id}`}
+                  className="grid grid-cols-12 gap-2 px-4 py-4 text-sm transition hover:bg-neutral-50"
+                >
+                  <div className="col-span-12 md:col-span-4">
+                    <p className="font-semibold text-neutral-950">
+                      {contract.clientes.nombre}
+                    </p>
+                    <p className="mt-1 text-neutral-500">
+                      {contract.clientes.nit} · {contract.clientes.ejecutivo}
+                    </p>
+                    {isRenewableExpiring ? (
+                      <span className="mt-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                        Renovable por vencer
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="col-span-6 md:col-span-2">
+                    <p className="font-medium text-neutral-800">
+                      {contract.numero_contrato ?? "Sin número"}
+                    </p>
+                    <p className="mt-1 truncate text-neutral-500">
+                      {contract.contratista ?? "Sin contratista"}
+                    </p>
+                  </div>
+                  <div className="col-span-6 md:col-span-2">
+                    {formatCurrency(contract.valor_contrato, contract.moneda)}
+                  </div>
+                  <div className="col-span-6 md:col-span-2">
+                    {formatDate(contract.fecha_fin)}
+                  </div>
+                  <div className="col-span-6 md:col-span-2">
+                    <StatusBadge state={contract.estado} />
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         )}
       </section>
     </div>
   );
+}
+
+function isExpiringRenewableContract(contract: ContractListRecord) {
+  if (!contract.renovable_automaticamente || !contract.fecha_fin) {
+    return false;
+  }
+
+  const days = diffDaysDateOnly(
+    new Date().toISOString().slice(0, 10),
+    contract.fecha_fin,
+  );
+
+  return days !== null && days >= 0 && days <= 30;
 }

@@ -1,4 +1,5 @@
 import { STORAGE_BUCKET } from "@/lib/constants";
+import { NON_TERMINAL_AMENDMENT_STATES } from "@/lib/amendments";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
 import { uploadFormSchema } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
@@ -65,11 +66,48 @@ export async function POST(request: Request) {
 
       if (!activeIssuedQuote) {
         return jsonError(
-          "Los otrosíes estarán disponibles cuando exista una póliza base emitida.",
+          "Solo se puede cargar un otrosí cuando exista una póliza base emitida.",
           409,
         );
       }
 
+      const { data: pendingModifications, error: pendingError } = await supabase
+        .from("modificaciones_contractuales")
+        .select("id,numero_modificacion,estado")
+        .eq("contrato_id", input.contratoBaseId)
+        .in("estado", [...NON_TERMINAL_AMENDMENT_STATES])
+        .limit(1);
+
+      if (pendingError) {
+        throw new Error(
+          `Fallo al validar secuencia de otrosíes: ${pendingError.message}`,
+        );
+      }
+
+      const pendingModification = pendingModifications?.[0] ?? null;
+
+      if (pendingModification) {
+        return jsonError(
+          `Ya existe un otrosí pendiente (${pendingModification.numero_modificacion ?? pendingModification.id}). Debe emitirse o eliminarse antes de cargar otro.`,
+          409,
+        );
+      }
+
+      const { data: latestModifications, error: latestModificationError } =
+        await supabase
+          .from("modificaciones_contractuales")
+          .select("secuencia")
+          .eq("contrato_id", input.contratoBaseId)
+          .order("secuencia", { ascending: false, nullsFirst: false })
+          .limit(1);
+
+      if (latestModificationError) {
+        throw new Error(
+          `Fallo al consultar secuencia de otrosíes: ${latestModificationError.message}`,
+        );
+      }
+
+      const nextSequence = (latestModifications?.[0]?.secuencia ?? 0) + 1;
       const baseContractRecord = baseContract as unknown as {
         id: string | number;
         clientes:
@@ -119,9 +157,30 @@ export async function POST(request: Request) {
         );
       }
 
+      const { data: modification, error: modificationError } = await supabase
+        .from("modificaciones_contractuales")
+        .insert({
+          contrato_id: baseContractRecord.id,
+          documento_id: document.id,
+          secuencia: nextSequence,
+          cotizacion_base_id: activeIssuedQuote.id,
+          estado: "cargado",
+          requiere_revision: true,
+          requiere_ajuste_garantias: true,
+        })
+        .select("id")
+        .single();
+
+      if (modificationError || !modification) {
+        throw new Error(
+          `Fallo al crear el registro del otrosí: ${modificationError?.message ?? "sin detalle"}`,
+        );
+      }
+
       return jsonOk({
         contractId: baseContractRecord.id,
         documentId: document.id,
+        modificationId: modification.id,
         status: "cargado",
       });
     }

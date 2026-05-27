@@ -31,6 +31,8 @@ export async function GET(_request: Request, { params }: IdContext) {
       { data: amparos, error: amparosError },
       { data: latestExtraction, error: latestExtractionError },
       { data: cotizaciones, error: cotizacionesError },
+      { data: modificaciones, error: modificacionesError },
+      { data: cotizacionesAjuste, error: cotizacionesAjusteError },
     ] = await Promise.all([
       supabase
         .from("documentos")
@@ -57,6 +59,17 @@ export async function GET(_request: Request, { params }: IdContext) {
         .select("*")
         .eq("contrato_id", id)
         .order("version", { ascending: false }),
+      supabase
+        .from("modificaciones_contractuales")
+        .select("*")
+        .eq("contrato_id", id)
+        .order("secuencia", { ascending: true, nullsFirst: false })
+        .order("creado_en", { ascending: true }),
+      supabase
+        .from("cotizaciones_ajuste")
+        .select("*")
+        .eq("contrato_id", id)
+        .order("fecha_generacion", { ascending: false }),
     ]);
 
     if (documentsError) {
@@ -76,6 +89,18 @@ export async function GET(_request: Request, { params }: IdContext) {
     if (cotizacionesError) {
       throw new Error(
         `Fallo al consultar cotizaciones: ${cotizacionesError.message}`,
+      );
+    }
+
+    if (modificacionesError) {
+      throw new Error(
+        `Fallo al consultar otrosíes: ${modificacionesError.message}`,
+      );
+    }
+
+    if (cotizacionesAjusteError) {
+      throw new Error(
+        `Fallo al consultar cotizaciones de ajuste: ${cotizacionesAjusteError.message}`,
       );
     }
 
@@ -116,6 +141,8 @@ export async function GET(_request: Request, { params }: IdContext) {
       tasasReferencia: relevantRates,
       extraction: latestExtraction?.json_original ?? null,
       cotizaciones: cotizaciones ?? [],
+      modificaciones: modificaciones ?? [],
+      cotizacionesAjuste: cotizacionesAjuste ?? [],
     });
   } catch (error) {
     return jsonError(getErrorMessage(error));

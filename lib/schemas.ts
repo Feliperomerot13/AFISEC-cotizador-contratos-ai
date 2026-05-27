@@ -153,11 +153,23 @@ export const amendmentExtractionSchema = z
     numero_modificacion: sourcedValueSchema,
     tipo_modificacion: sourcedValueSchema,
     contrato_afectado: sourcedValueSchema,
+    fecha_firma: sourcedDateSchema,
+    valor_contrato_anterior: sourcedNumberSchema,
     valor_adicion: sourcedNumberSchema,
     valor_contrato_acumulado: sourcedNumberSchema,
     fecha_desde: sourcedDateSchema,
     fecha_hasta: sourcedDateSchema,
     dias_prorroga: sourcedIntegerSchema,
+    objeto_nuevo: sourcedValueSchema,
+    requiere_ajuste_garantias: z
+      .object({
+        valor: z.boolean().nullable(),
+        confianza: confidenceSchema,
+        pagina: pageSchema,
+        fuente: sourceSchema,
+      })
+      .strict(),
+    impuesto_timbre: sourcedValueSchema,
     fuente_texto: sourceSchema,
     fuente_pagina: pageSchema,
     confianza: confidenceSchema,
@@ -252,6 +264,7 @@ export const validateContractSchema = z.object({
     fecha_inicio: nullableDateString,
     fecha_fin: nullableDateString,
     plazo: emptyToNullString,
+    renovable_automaticamente: z.boolean().default(false),
     contratante: emptyToNullString,
     contratante_nit: emptyToNullString,
     contratista: emptyToNullString,
@@ -298,4 +311,41 @@ export const contractListQuerySchema = z.object({
   vencen: z.enum(["30"]).optional(),
 });
 
+const nullableRateRecord = z.record(
+  z.string(),
+  z.preprocess((value) => normalizeNumber(value), z.number().nonnegative().nullable()),
+);
+
+export const amendmentReviewSchema = z.object({
+  numero_modificacion: emptyToNullString,
+  tipo_modificacion: emptyToNullString,
+  fecha_firma: nullableDateString,
+  valor_contrato_anterior: nullableNumber,
+  valor_adicion: nullableNumber,
+  valor_contrato_acumulado: nullableNumber,
+  fecha_desde: nullableDateString,
+  fecha_hasta: nullableDateString,
+  dias_prorroga: nullableInteger,
+  objeto_nuevo: emptyToNullString,
+  requiere_ajuste_garantias: z.boolean().default(true),
+  observaciones: emptyToNullString,
+  tasas: nullableRateRecord.default({}),
+});
+
+export const amendmentCloseSchema = z.object({
+  estado: z.enum(["anulado", "no_aplicable"]),
+  motivo: z.preprocess(
+    (value) => normalizeText(value),
+    z.string().min(3, "Debes registrar un motivo."),
+  ),
+});
+
+export const amendmentQuoteRevertSchema = z.object({
+  motivo: z.preprocess(
+    (value) => normalizeText(value) ?? "Reversión operativa del otrosí",
+    z.string().min(3),
+  ),
+});
+
 export type ValidateContractPayload = z.infer<typeof validateContractSchema>;
+export type AmendmentReviewPayload = z.infer<typeof amendmentReviewSchema>;

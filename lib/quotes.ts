@@ -130,6 +130,29 @@ export function calculateQuoteTotals(coverages: QuoteSnapshotCoverage[]) {
   return { prima_neta, iva, prima_total };
 }
 
+export function calculateQuoteTotalsByBlock(coverages: QuoteSnapshotCoverage[]) {
+  const civilLiabilityCoverages = coverages.filter((coverage) =>
+    isCivilLiabilityCoverageType(coverage.tipo_amparo),
+  );
+  const guaranteeCoverages = coverages.filter(
+    (coverage) => !isCivilLiabilityCoverageType(coverage.tipo_amparo),
+  );
+
+  return {
+    garantias: calculateQuoteGroupTotals(guaranteeCoverages),
+    responsabilidad_civil: calculateQuoteGroupTotals(civilLiabilityCoverages),
+    general: calculateQuoteTotals(coverages),
+  };
+}
+
+function calculateQuoteGroupTotals(coverages: QuoteSnapshotCoverage[]) {
+  if (coverages.length === 0) {
+    return { prima_neta: 0, iva: 0, prima_total: 0 };
+  }
+
+  return calculateQuoteTotals(coverages);
+}
+
 export function buildQuoteNumber(contractId: string | number, generatedAt: string) {
   const year = new Date(generatedAt).getFullYear();
   const suffix = String(contractId)
@@ -202,12 +225,7 @@ export function quoteStatusLabel(status: string) {
 }
 
 export function formatCoverageName(value: string) {
-  const normalized = value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
+  const normalized = normalizeCoverageKey(value);
   const labels: Record<string, string> = {
     cumplimiento: "Cumplimiento",
     buen_manejo_anticipo: "Buen manejo de anticipo",
@@ -220,6 +238,26 @@ export function formatCoverageName(value: string) {
   };
 
   return labels[normalized] ?? titleCaseCoverageName(value);
+}
+
+export function isCivilLiabilityCoverageType(value: string) {
+  const normalized = normalizeCoverageKey(value);
+
+  return (
+    normalized.includes("responsabilidad_civil") ||
+    normalized.includes("extracontractual") ||
+    normalized.includes("rce") ||
+    normalized.includes("plo")
+  );
+}
+
+function normalizeCoverageKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function sumNullable(values: Array<number | null>) {

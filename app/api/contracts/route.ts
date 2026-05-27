@@ -15,6 +15,7 @@ type ContractListRecord = {
   moneda: string;
   fecha_inicio: string | null;
   fecha_fin: string | null;
+  renovable_automaticamente: boolean;
   contratista: string | null;
   contratista_nit: string | null;
   estado: string;
@@ -53,6 +54,7 @@ export async function GET(request: Request) {
           "moneda",
           "fecha_inicio",
           "fecha_fin",
+          "renovable_automaticamente",
           "contratista",
           "contratista_nit",
           "estado",
@@ -61,6 +63,7 @@ export async function GET(request: Request) {
           "fecha_validacion",
           "creado_en",
           "clientes!inner(id,nombre,nit,ejecutivo)",
+          "cotizaciones(id,estado)",
         ].join(","),
       )
       .order("creado_en", { ascending: false })

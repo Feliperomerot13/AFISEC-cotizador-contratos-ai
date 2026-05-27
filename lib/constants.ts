@@ -1,6 +1,13 @@
-export const EXECUTIVES = ["Diana", "Carolina"] as const;
+export const EXECUTIVES = ["Carolina Barragán", "Viviana Clavijo"] as const;
 
-export const DOCUMENT_TYPES = ["contrato_base", "otrosi", "otro"] as const;
+export const DEFAULT_EXECUTIVE = EXECUTIVES[0];
+
+export const DOCUMENT_TYPES = [
+  "contrato_base",
+  "orden",
+  "orden_compra",
+  "otrosi",
+] as const;
 
 export const CONTRACT_STATES = [
   "cargado",

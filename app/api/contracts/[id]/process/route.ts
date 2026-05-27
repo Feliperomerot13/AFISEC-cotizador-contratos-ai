@@ -1,6 +1,6 @@
 import { waitUntil } from "@vercel/functions";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
-import { processContract } from "@/lib/processing";
+import { processAmendmentDocument, processContract } from "@/lib/processing";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -13,22 +13,21 @@ export async function POST(_request: Request, { params }: IdContext) {
   try {
     const { id } = await params;
     const supabase = getSupabaseAdmin();
-    const { data: otrosiDocument, error: otrosiDocumentError } = await supabase
+    const { data: latestDocument, error: latestDocumentError } = await supabase
       .from("documentos")
-      .select("id")
+      .select("id,tipo_documento")
       .eq("contrato_id", id)
-      .eq("tipo_documento", "otrosi")
       .order("fecha_carga", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (otrosiDocumentError) {
+    if (latestDocumentError) {
       throw new Error(
-        `No se pudo validar el tipo de documento: ${otrosiDocumentError.message}`,
+        `No se pudo validar el tipo de documento: ${latestDocumentError.message}`,
       );
     }
 
-    if (otrosiDocument) {
+    if (latestDocument?.tipo_documento === "otrosi") {
       const { data: activeIssuedQuote, error: activeIssuedQuoteError } =
         await supabase
           .from("cotizaciones")
@@ -45,10 +44,18 @@ export async function POST(_request: Request, { params }: IdContext) {
 
       if (!activeIssuedQuote) {
         return jsonError(
-          "Los otrosíes estarán disponibles cuando exista una póliza base emitida.",
+          "Solo se puede procesar un otrosí cuando exista una póliza base emitida.",
           409,
         );
       }
+
+      const processing = processAmendmentDocument({
+        contratoId: id,
+        documentoId: latestDocument.id,
+      });
+
+      const modification = await processing;
+      return jsonOk({ status: "otrosi_procesado", modification });
     }
 
     const { error } = await supabase

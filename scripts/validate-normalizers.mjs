@@ -81,7 +81,7 @@ const complianceCoverage = normalizeCoverage(
     cuantia_fija: null,
     valor_asegurado: null,
     tipo_vigencia: "contractual",
-    base_vigencia: "otra",
+    base_vigencia: "fecha_fin_contrato",
     dias_adicionales: 30,
     fecha_desde: null,
     fecha_hasta: null,
@@ -107,6 +107,71 @@ assert.equal(complianceCoverage.dias_vigencia, 396);
 assert.equal(complianceCoverage.prima_neta, 1640591.55);
 assert.equal(complianceCoverage.impuesto, 311712.39);
 assert.equal(complianceCoverage.prima_total, 1952303.94);
+
+const contractualStartBaseCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_inicio_contrato",
+    dias_adicionales: 30,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto:
+      "Cumplimiento con vigencia igual al plazo de ejecución del contrato y treinta (30) días más.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+    iva_porcentaje: 0.19,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(contractualStartBaseCoverage.base_vigencia, "fecha_inicio_contrato");
+assert.equal(contractualStartBaseCoverage.fecha_desde, "2024-02-02");
+assert.equal(contractualStartBaseCoverage.fecha_hasta, "2025-03-04");
+assert.equal(contractualStartBaseCoverage.dias_adicionales, 30);
+assert.equal(contractualStartBaseCoverage.dias_vigencia, 396);
+
+const contractualQualityStartBaseCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Calidad del servicio",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_inicio_contrato",
+    dias_adicionales: null,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto:
+      "Garantía de calidad del servicio con vigencia igual al plazo de ejecución del mismo y treinta (30) días más, contados a partir del Acta de Recibo Final.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(contractualQualityStartBaseCoverage.fecha_desde, "2024-02-02");
+assert.equal(contractualQualityStartBaseCoverage.fecha_hasta, "2025-03-04");
+assert.equal(contractualQualityStartBaseCoverage.dias_adicionales, 30);
+assert.equal(contractualQualityStartBaseCoverage.dias_vigencia, 396);
+assert.equal(contractualQualityStartBaseCoverage.requiere_revision, true);
+assert.match(
+  contractualQualityStartBaseCoverage.motivo_revision ?? "",
+  /acta de recibo final/i,
+);
 
 const changedAdditionalDaysCoverage = normalizeCoverage(
   {

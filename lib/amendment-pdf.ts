@@ -1,18 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
-import {
-  calculateQuoteTotalsByBlock,
-  formatCoverageName,
-  getQuoteCommercialIssues,
-  type QuoteSnapshot,
-} from "@/lib/quotes";
-
-type QuotePdfInput = {
-  quoteNumber: string;
-  version: number;
-  snapshot: QuoteSnapshot;
-};
+import type {
+  AmendmentLiquidationRow,
+  AmendmentQuoteSnapshot,
+} from "@/lib/amendments";
 
 type PdfPage = {
   commands: string[];
@@ -36,16 +28,17 @@ type PdfTableCell = {
   color?: string;
 };
 
-const PAGE_WIDTH = 612;
-const PAGE_HEIGHT = 792;
-const MARGIN_X = 36;
-const TOP_Y = 748;
-const BOTTOM_Y = 58;
+const PAGE_WIDTH = 792;
+const PAGE_HEIGHT = 612;
+const MARGIN_X = 32;
+const TOP_Y = 570;
+const BOTTOM_Y = 42;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN_X * 2;
 const AFISEC_PRIMARY = "0.824 0.357 0.188";
 const AFISEC_GRAY = "0.478 0.478 0.478";
 const TABLE_BORDER = "0.86 0.86 0.86";
 const TABLE_HEADER = "0.96 0.94 0.93";
+const SOFT_FILL = "0.985 0.985 0.985";
 const AFISEC_LOGO_PATH = join(
   process.cwd(),
   "public",
@@ -53,22 +46,7 @@ const AFISEC_LOGO_PATH = join(
   "Logo_Color_Afisec_cuadrado.png",
 );
 
-export function generateQuotePdf({
-  quoteNumber,
-  version,
-  snapshot,
-}: QuotePdfInput): Uint8Array {
-  const commercialIssues = getQuoteCommercialIssues(snapshot);
-
-  if (commercialIssues.length > 0) {
-    throw new Error(
-      [
-        "No se puede generar el PDF comercial con amparos incompletos.",
-        ...commercialIssues,
-      ].join(" "),
-    );
-  }
-
+export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
   const pages: PdfPage[] = [];
   const logo = loadAfisecLogo();
   const page = () => pages[pages.length - 1];
@@ -84,294 +62,313 @@ export function generateQuotePdf({
   }
 
   function addHeader() {
-    ensureSpace(96);
+    ensureSpace(80);
     const current = page();
-
-    current.commands.push(
-      `1 1 1 rg ${MARGIN_X} ${current.y - 76} ${CONTENT_WIDTH} 86 re f`,
-    );
 
     if (logo) {
       current.commands.push(
-        `q 44 0 0 52 ${MARGIN_X} ${current.y - 52} cm /Logo Do Q`,
+        `q 42 0 0 50 ${MARGIN_X} ${current.y - 48} cm /Logo Do Q`,
       );
     }
 
     current.commands.push(
-      `${AFISEC_PRIMARY} rg BT /F2 16 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 16} Tm ${toPdfText("Cotización de garantías contractuales")} Tj ET`,
-      `${AFISEC_GRAY} rg BT /F1 9 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 31} Tm ${toPdfText("AFISEC")} Tj ET`,
+      `${AFISEC_PRIMARY} rg BT /F2 16 Tf 1 0 0 1 ${MARGIN_X + 56} ${current.y - 14} Tm ${toPdfText("Cotización de ajuste por otrosí")} Tj ET`,
+      `${AFISEC_GRAY} rg BT /F1 8 Tf 1 0 0 1 ${MARGIN_X + 56} ${current.y - 29} Tm ${toPdfText("AFISEC | Garantías contractuales")} Tj ET`,
     );
 
     addTableRows(
       [
         [
-          { text: "Cotización", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: quoteNumber, width: 112 },
+          { text: "Cotización", width: 78, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.numero_cotizacion, width: 134 },
         ],
         [
-          { text: "Versión", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: String(version), width: 112 },
+          { text: "Versión", width: 78, bold: true, fill: TABLE_HEADER },
+          { text: `v${snapshot.version}`, width: 134 },
         ],
         [
-          { text: "Fecha", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: formatDate(snapshot.generado_en), width: 112 },
+          { text: "Fecha", width: 78, bold: true, fill: TABLE_HEADER },
+          { text: formatDate(snapshot.generado_en), width: 134 },
         ],
       ],
       {
-        x: PAGE_WIDTH - MARGIN_X - 184,
-        y: current.y - 6,
-        fontSize: 7.5,
-        lineHeight: 9,
+        x: PAGE_WIDTH - MARGIN_X - 212,
+        y: current.y - 4,
+        fontSize: 7.2,
+        lineHeight: 8.6,
         minHeight: 16,
       },
     );
 
     current.commands.push(
-      `${AFISEC_PRIMARY} RG 1.5 w ${MARGIN_X} ${current.y - 72} m ${PAGE_WIDTH - MARGIN_X} ${current.y - 72} l S`,
+      `${AFISEC_PRIMARY} RG 1.4 w ${MARGIN_X} ${current.y - 66} m ${PAGE_WIDTH - MARGIN_X} ${current.y - 66} l S`,
     );
-    current.y -= 88;
+    current.y -= 80;
   }
 
   function addSectionTitle(title: string) {
     ensureSpace(24);
     page().commands.push(
-      `${AFISEC_PRIMARY} rg BT /F2 11 Tf 1 0 0 1 ${MARGIN_X} ${page().y} Tm ${toPdfText(title)} Tj ET`,
+      `${AFISEC_PRIMARY} rg BT /F2 10.5 Tf 1 0 0 1 ${MARGIN_X} ${page().y} Tm ${toPdfText(title)} Tj ET`,
     );
-    page().y -= 14;
+    page().y -= 13;
   }
 
-  function addGeneralInfoTable() {
+  function addGeneralInfo() {
     addSectionTitle("Información general");
     addTableRows(
       [
         [
-          { text: "Cliente", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.nombre, width: 196 },
-          { text: "NIT", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.nit, width: 196 },
+          { text: "Cliente", width: 70, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.nombre, width: 174 },
+          { text: "NIT", width: 50, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.nit, width: 114 },
+          { text: "Ejecutiva", width: 66, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.ejecutivo, width: 254 },
         ],
         [
-          { text: "Ejecutiva", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.ejecutivo, width: 196 },
-          { text: "Contrato / orden", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.numero_contrato ?? "Sin número", width: 196 },
-        ],
-        [
-          { text: "Contratante", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.contratante ?? "Sin dato", width: 196 },
-          { text: "Contratista", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.contratista ?? "Sin dato", width: 196 },
-        ],
-        [
-          { text: "Valor base", width: 72, bold: true, fill: TABLE_HEADER },
+          { text: "Contrato", width: 70, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.numero_contrato ?? "Sin número", width: 174 },
+          { text: "Otrosí", width: 50, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(
-              snapshot.contrato.base_calculo_amparos ??
-                snapshot.contrato.valor_contrato,
-              snapshot.contrato.moneda,
-            ),
-            width: 196,
+            text:
+              snapshot.modificacion.numero_modificacion ??
+              `Otrosí ${snapshot.modificacion.secuencia}`,
+            width: 114,
           },
-          { text: "Base incluye IVA", width: 76, bold: true, fill: TABLE_HEADER },
+          { text: "Póliza base", width: 66, bold: true, fill: TABLE_HEADER },
           {
-            text: getBaseIncludesIvaLabel(
-              snapshot.contrato.base_calculo_incluye_iva,
-            ),
-            width: 196,
+            text: `${snapshot.poliza_base.numero_cotizacion} v${snapshot.poliza_base.version}`,
+            width: 254,
           },
         ],
         [
-          { text: "Vigencia general", width: 72, bold: true, fill: TABLE_HEADER },
-          {
-            text: `${formatDate(snapshot.contrato.fecha_inicio)} a ${formatDate(snapshot.contrato.fecha_fin)}`,
-            width: 468,
-          },
-        ],
-        [
-          { text: "Objeto resumido", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.objeto ?? "Sin dato", width: 468 },
+          { text: "Contratante", width: 70, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.contratante ?? "Sin dato", width: 338 },
+          { text: "Contratista", width: 66, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.contratista ?? "Sin dato", width: 254 },
         ],
       ],
       {
-        fontSize: 7.5,
-        lineHeight: 9,
+        fontSize: 7,
+        lineHeight: 8.2,
         minHeight: 18,
       },
     );
-    page().y -= 12;
+    page().y -= 10;
   }
 
-  function addCoverageTable() {
-    addSectionTitle("Amparos cotizados");
+  function addDeltaTable() {
+    addSectionTitle("Delta revisado");
+    addTableRows(
+      [
+        [
+          { text: "Valor anterior", width: 90, bold: true, fill: TABLE_HEADER },
+          {
+            text: formatMoney(
+              snapshot.modificacion.valor_contrato_anterior,
+              snapshot.contrato.moneda,
+            ),
+            width: 134,
+            align: "right",
+          },
+          { text: "Valor adicionado", width: 92, bold: true, fill: TABLE_HEADER },
+          {
+            text: formatMoney(
+              snapshot.modificacion.valor_adicion,
+              snapshot.contrato.moneda,
+            ),
+            width: 132,
+            align: "right",
+          },
+          { text: "Valor acumulado", width: 94, bold: true, fill: TABLE_HEADER },
+          {
+            text: formatMoney(
+              snapshot.modificacion.valor_contrato_acumulado,
+              snapshot.contrato.moneda,
+            ),
+            width: 186,
+            align: "right",
+          },
+        ],
+        [
+          { text: "Fecha fin anterior", width: 90, bold: true, fill: TABLE_HEADER },
+          { text: formatDate(snapshot.modificacion.fecha_fin_anterior), width: 134 },
+          { text: "Nueva fecha fin", width: 92, bold: true, fill: TABLE_HEADER },
+          { text: formatDate(snapshot.modificacion.nueva_fecha_fin), width: 132 },
+          { text: "Días prórroga", width: 94, bold: true, fill: TABLE_HEADER },
+          {
+            text: String(snapshot.modificacion.dias_prorroga ?? 0),
+            width: 186,
+            align: "right",
+          },
+        ],
+        [
+          { text: "Objeto ajustado", width: 90, bold: true, fill: TABLE_HEADER },
+          {
+            text:
+              snapshot.modificacion.objeto_nuevo ??
+              snapshot.contrato.objeto ??
+              "Sin cambio registrado",
+            width: 638,
+          },
+        ],
+      ],
+      {
+        fontSize: 7,
+        lineHeight: 8.2,
+        minHeight: 18,
+      },
+    );
+    page().y -= 10;
+  }
 
+  function addLiquidationTable() {
+    addSectionTitle("Liquidación incremental");
     const header: PdfTableCell[] = [
-      { text: "Amparo", width: 150, bold: true, fill: TABLE_HEADER },
-      {
-        text: "Valor asegurado",
-        width: 82,
-        bold: true,
-        fill: TABLE_HEADER,
-      },
-      { text: "Desde", width: 42, bold: true, fill: TABLE_HEADER },
-      { text: "Hasta", width: 42, bold: true, fill: TABLE_HEADER },
-      { text: "Días", width: 28, bold: true, fill: TABLE_HEADER, align: "right" },
-      {
-        text: "Prima neta",
-        width: 70,
-        bold: true,
-        fill: TABLE_HEADER,
-        align: "right",
-      },
-      { text: "IVA", width: 56, bold: true, fill: TABLE_HEADER, align: "right" },
-      {
-        text: "Prima total",
-        width: 70,
-        bold: true,
-        fill: TABLE_HEADER,
-        align: "right",
-      },
+      { text: "Amparo", width: 132, bold: true, fill: TABLE_HEADER },
+      { text: "VA vigente", width: 76, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "VA adición", width: 76, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "VA acumulado", width: 82, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Hasta", width: 54, bold: true, fill: TABLE_HEADER },
+      { text: "Días", width: 34, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Prima adición", width: 82, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Prima prórroga", width: 84, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "IVA", width: 50, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Total", width: 58, bold: true, fill: TABLE_HEADER, align: "right" },
     ];
 
     addTableRows([header], {
-      fontSize: 7,
-      lineHeight: 8.5,
+      fontSize: 6.4,
+      lineHeight: 7.8,
       minHeight: 20,
     });
 
-    if (snapshot.amparos.length === 0) {
-      addTableRows(
-        [[{ text: "No se registran amparos cotizados.", width: CONTENT_WIDTH }]],
-        {
-          fontSize: 7.5,
-          lineHeight: 9,
-          minHeight: 20,
-        },
-      );
-      page().y -= 12;
-      return;
-    }
-
-    snapshot.amparos.forEach((amparo) => {
-      const row: PdfTableCell[] = [
-        { text: formatCoverageName(amparo.tipo_amparo), width: 150 },
-        {
-          text: formatMoney(amparo.valor_asegurado, snapshot.contrato.moneda),
-          width: 82,
-          align: "right",
-        },
-        { text: formatCompactDate(amparo.fecha_desde), width: 42 },
-        { text: formatCompactDate(amparo.fecha_hasta), width: 42 },
-        {
-          text:
-            amparo.dias_vigencia === null
-              ? "Sin dato"
-              : String(amparo.dias_vigencia),
-          width: 28,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.prima_neta, snapshot.contrato.moneda),
-          width: 70,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.iva, snapshot.contrato.moneda),
-          width: 56,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.prima_total, snapshot.contrato.moneda),
-          width: 70,
-          align: "right",
-        },
-      ];
-      const rowHeight = getRowHeight(row, 6.4, 8.2, 24);
-
-      if (page().y - rowHeight < BOTTOM_Y) {
-        newPage();
-        addTableRows([header], {
-          fontSize: 7,
-          lineHeight: 8.5,
-          minHeight: 20,
-        });
-      }
-
-      addTableRows([row], {
-        fontSize: 6.4,
-        lineHeight: 8.2,
-        minHeight: 24,
-      });
+    snapshot.liquidacion.rows.forEach((row) => {
+      addLiquidationRow(row, header);
     });
 
-    page().y -= 12;
+    page().y -= 8;
   }
 
-  function addTotalsTable() {
-    const totalsByBlock = calculateQuoteTotalsByBlock(snapshot.amparos);
+  function addLiquidationRow(row: AmendmentLiquidationRow, header: PdfTableCell[]) {
+    const cells: PdfTableCell[] = [
+      { text: row.nombre_amparo, width: 132 },
+      {
+        text: formatMoney(row.valor_asegurado_vigente, snapshot.contrato.moneda),
+        width: 76,
+        align: "right",
+      },
+      {
+        text: formatMoney(row.valor_asegurado_adicion, snapshot.contrato.moneda),
+        width: 76,
+        align: "right",
+      },
+      {
+        text: formatMoney(row.valor_asegurado_acumulado, snapshot.contrato.moneda),
+        width: 82,
+        align: "right",
+      },
+      { text: formatCompactDate(row.fecha_hasta), width: 54 },
+      { text: String(row.dias_prorroga), width: 34, align: "right" },
+      {
+        text: formatMoney(row.prima_valor_adicionado, snapshot.contrato.moneda),
+        width: 82,
+        align: "right",
+      },
+      {
+        text: formatMoney(row.prima_prorroga, snapshot.contrato.moneda),
+        width: 84,
+        align: "right",
+      },
+      { text: formatMoney(row.iva, snapshot.contrato.moneda), width: 50, align: "right" },
+      {
+        text: formatMoney(row.prima_total, snapshot.contrato.moneda),
+        width: 58,
+        align: "right",
+      },
+    ];
+    const rowHeight = getRowHeight(cells, 6.1, 7.5, 22);
 
-    ensureSpace(112);
+    if (page().y - rowHeight < BOTTOM_Y) {
+      newPage();
+      addTableRows([header], {
+        fontSize: 6.4,
+        lineHeight: 7.8,
+        minHeight: 20,
+      });
+    }
+
+    addTableRows([cells], {
+      fontSize: 6.1,
+      lineHeight: 7.5,
+      minHeight: 22,
+    });
+
+    if (row.es_rce && row.subamparos.length > 0) {
+      addTableRows(
+        [
+          [
+            {
+              text: `Subamparos RCE/PLO informativos, sin prima individual: ${formatSubcoverages(row.subamparos, snapshot.contrato.moneda)}. La prima corresponde únicamente a la línea principal.`,
+              width: CONTENT_WIDTH,
+              fill: SOFT_FILL,
+              color: AFISEC_GRAY,
+            },
+          ],
+        ],
+        {
+          fontSize: 6.3,
+          lineHeight: 7.7,
+          minHeight: 18,
+        },
+      );
+    }
+  }
+
+  function addTotals() {
+    ensureSpace(86);
     addSectionTitle("Totales");
     addTableRows(
       [
         [
-          { text: "Bloque", width: 125, bold: true, fill: TABLE_HEADER },
-          { text: "Prima neta", width: 90, bold: true, fill: TABLE_HEADER, align: "right" },
-          { text: "IVA", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
-          { text: "Total", width: 95, bold: true, fill: TABLE_HEADER, align: "right" },
-        ],
-        [
-          { text: "Total garantías / cumplimiento", width: 125, bold: true },
+          { text: "Prima por valor adicionado", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(totalsByBlock.garantias.prima_neta, snapshot.contrato.moneda),
-            width: 90,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.garantias.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.garantias.prima_total, snapshot.contrato.moneda),
-            width: 95,
+            text: formatMoney(
+              snapshot.liquidacion.totales.prima_valor_adicionado,
+              snapshot.contrato.moneda,
+            ),
+            width: 130,
             align: "right",
           },
         ],
         [
-          { text: "Total responsabilidad civil", width: 125, bold: true },
+          { text: "Prima por prórroga", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.prima_neta, snapshot.contrato.moneda),
-            width: 90,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.prima_total, snapshot.contrato.moneda),
-            width: 95,
+            text: formatMoney(
+              snapshot.liquidacion.totales.prima_prorroga,
+              snapshot.contrato.moneda,
+            ),
+            width: 130,
             align: "right",
           },
         ],
         [
-          { text: "Total general", width: 125, bold: true, fill: TABLE_HEADER },
+          { text: "IVA", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(totalsByBlock.general.prima_neta, snapshot.contrato.moneda),
-            width: 90,
+            text: formatMoney(snapshot.liquidacion.totales.iva, snapshot.contrato.moneda),
+            width: 130,
             align: "right",
-            bold: true,
           },
+        ],
+        [
+          { text: "Total ajuste", width: 168, bold: true, fill: TABLE_HEADER },
           {
-            text: formatMoney(totalsByBlock.general.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-            bold: true,
-          },
-          {
-            text: formatMoney(totalsByBlock.general.prima_total, snapshot.contrato.moneda),
-            width: 95,
+            text: formatMoney(
+              snapshot.liquidacion.totales.prima_total,
+              snapshot.contrato.moneda,
+            ),
+            width: 130,
             align: "right",
             bold: true,
             color: AFISEC_PRIMARY,
@@ -379,26 +376,29 @@ export function generateQuotePdf({
         ],
       ],
       {
-        x: PAGE_WIDTH - MARGIN_X - 380,
-        fontSize: 8,
-        lineHeight: 10,
-        minHeight: 20,
-      },
-    );
-    page().y -= 10;
-  }
-
-  function addCommercialNotes() {
-    ensureSpace(48);
-    addSectionTitle("Observaciones comerciales");
-    addTableRows(
-      snapshot.observaciones.map((observation) => [
-        { text: formatCommercialObservation(observation), width: CONTENT_WIDTH },
-      ]),
-      {
-        fontSize: 7.5,
+        x: PAGE_WIDTH - MARGIN_X - 298,
+        fontSize: 7.4,
         lineHeight: 9,
         minHeight: 18,
+      },
+    );
+    page().y -= 8;
+  }
+
+  function addNotes() {
+    ensureSpace(64);
+    addSectionTitle("Observaciones comerciales");
+    const notes = [
+      ...snapshot.observaciones,
+      ...snapshot.alertas.map((alert) => `Alerta informativa: ${alert}`),
+    ];
+
+    addTableRows(
+      notes.map((note) => [{ text: note, width: CONTENT_WIDTH }]),
+      {
+        fontSize: 7,
+        lineHeight: 8.4,
+        minHeight: 17,
       },
     );
   }
@@ -461,9 +461,8 @@ export function generateQuotePdf({
 
       page().commands.push(
         `${fill} rg ${x} ${options.y - options.height} ${cell.width} ${options.height} re f`,
-        `${TABLE_BORDER} RG 0.4 w ${x} ${options.y - options.height} ${cell.width} ${options.height} re S`,
+        `${TABLE_BORDER} RG 0.35 w ${x} ${options.y - options.height} ${cell.width} ${options.height} re S`,
       );
-
       x += cell.width;
     });
 
@@ -473,7 +472,7 @@ export function generateQuotePdf({
       const lines = getCellLines(cell.text, cell.width, options.fontSize);
       const maxLines = Math.max(
         1,
-        Math.floor((options.height - 6) / options.lineHeight),
+        Math.floor((options.height - 5) / options.lineHeight),
       );
 
       lines.slice(0, maxLines).forEach((line, lineIndex) => {
@@ -485,7 +484,7 @@ export function generateQuotePdf({
           cell.align ?? "left",
         );
         const textY =
-          options.y - 6 - options.fontSize - lineIndex * options.lineHeight;
+          options.y - 5 - options.fontSize - lineIndex * options.lineHeight;
 
         page().commands.push(
           `${cell.color ?? "0 0 0"} rg BT /${cell.bold ? "F2" : "F1"} ${options.fontSize} Tf 1 0 0 1 ${textX} ${textY} Tm ${toPdfText(line)} Tj ET`,
@@ -496,66 +495,17 @@ export function generateQuotePdf({
     });
   }
 
-  function getRowHeight(
-    row: PdfTableCell[],
-    fontSize: number,
-    lineHeight: number,
-    minHeight: number,
-  ) {
-    const lineCount = Math.max(
-      ...row.map((cell) => getCellLines(cell.text, cell.width, fontSize).length),
-      1,
-    );
-
-    return Math.max(minHeight, 8 + lineCount * lineHeight);
-  }
-
-  function getCellLines(text: string, width: number, fontSize: number) {
-    return wrapTextToWidth(text, Math.max(8, width - 8), fontSize);
-  }
-
-  function getAlignedTextX(
-    x: number,
-    width: number,
-    textWidth: number,
-    align: "left" | "right" | "center",
-  ) {
-    if (align === "right") {
-      return x + width - textWidth - 4;
-    }
-
-    if (align === "center") {
-      return x + (width - textWidth) / 2;
-    }
-
-    return x + 4;
-  }
-
-  function estimateTextWidth(text: string, fontSize: number) {
-    return Array.from(text).reduce(
-      (total, char) => total + getApproxCharWidth(char, fontSize),
-      0,
-    );
-  }
-
-  function getBaseIncludesIvaLabel(value: boolean | null) {
-    if (value === null) {
-      return "No determinado";
-    }
-
-    return value ? "Sí" : "No";
-  }
-
   newPage();
   addHeader();
-  addGeneralInfoTable();
-  addCoverageTable();
-  addTotalsTable();
-  addCommercialNotes();
+  addGeneralInfo();
+  addDeltaTable();
+  addLiquidationTable();
+  addTotals();
+  addNotes();
 
   pages.forEach((pdfPage, index) => {
     pdfPage.commands.push(
-      `${AFISEC_GRAY} rg BT /F1 8 Tf 1 0 0 1 ${PAGE_WIDTH - 92} 30 Tm ${toPdfText(`Página ${index + 1} de ${pages.length}`)} Tj ET`,
+      `${AFISEC_GRAY} rg BT /F1 7.5 Tf 1 0 0 1 ${PAGE_WIDTH - 94} 24 Tm ${toPdfText(`Página ${index + 1} de ${pages.length}`)} Tj ET`,
     );
   });
 
@@ -806,12 +756,46 @@ function compositeOnWhite(value: number, alpha: number) {
   return Math.round(value * alpha + 255 * (1 - alpha));
 }
 
-function toPdfText(value: string) {
-  const bytes = Array.from(normalizePdfText(value)).map((char) =>
-    winAnsiCode(char),
+function getRowHeight(
+  row: PdfTableCell[],
+  fontSize: number,
+  lineHeight: number,
+  minHeight: number,
+) {
+  const lineCount = Math.max(
+    ...row.map((cell) => getCellLines(cell.text, cell.width, fontSize).length),
+    1,
   );
 
-  return `<${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("")}>`;
+  return Math.max(minHeight, 7 + lineCount * lineHeight);
+}
+
+function getCellLines(text: string, width: number, fontSize: number) {
+  return wrapTextToWidth(text, Math.max(8, width - 7), fontSize);
+}
+
+function getAlignedTextX(
+  x: number,
+  width: number,
+  textWidth: number,
+  align: "left" | "right" | "center",
+) {
+  if (align === "right") {
+    return x + width - textWidth - 3.5;
+  }
+
+  if (align === "center") {
+    return x + (width - textWidth) / 2;
+  }
+
+  return x + 3.5;
+}
+
+function estimateTextWidth(text: string, fontSize: number) {
+  return Array.from(text).reduce(
+    (total, char) => total + getApproxCharWidth(char, fontSize),
+    0,
+  );
 }
 
 function wrapTextToWidth(value: string, maxWidth: number, fontSize: number) {
@@ -825,7 +809,7 @@ function wrapTextToWidth(value: string, maxWidth: number, fontSize: number) {
     chunks.forEach((chunk) => {
       const next = current ? `${current} ${chunk}` : chunk;
 
-      if (estimateTextWidthStatic(next, fontSize) <= maxWidth) {
+      if (estimateTextWidth(next, fontSize) <= maxWidth) {
         current = next;
         return;
       }
@@ -846,7 +830,7 @@ function wrapTextToWidth(value: string, maxWidth: number, fontSize: number) {
 }
 
 function splitLongWord(word: string, maxWidth: number, fontSize: number) {
-  if (estimateTextWidthStatic(word, fontSize) <= maxWidth) {
+  if (estimateTextWidth(word, fontSize) <= maxWidth) {
     return [word];
   }
 
@@ -856,7 +840,7 @@ function splitLongWord(word: string, maxWidth: number, fontSize: number) {
   Array.from(word).forEach((char) => {
     const next = `${current}${char}`;
 
-    if (current && estimateTextWidthStatic(next, fontSize) > maxWidth) {
+    if (current && estimateTextWidth(next, fontSize) > maxWidth) {
       chunks.push(current);
       current = char;
       return;
@@ -870,13 +854,6 @@ function splitLongWord(word: string, maxWidth: number, fontSize: number) {
   }
 
   return chunks;
-}
-
-function estimateTextWidthStatic(text: string, fontSize: number) {
-  return Array.from(text).reduce(
-    (total, char) => total + getApproxCharWidth(char, fontSize),
-    0,
-  );
 }
 
 function getApproxCharWidth(char: string, fontSize: number) {
@@ -905,6 +882,14 @@ function getApproxCharWidth(char: string, fontSize: number) {
   }
 
   return fontSize * 0.48;
+}
+
+function toPdfText(value: string) {
+  const bytes = Array.from(normalizePdfText(value)).map((char) =>
+    winAnsiCode(char),
+  );
+
+  return `<${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("")}>`;
 }
 
 function normalizePdfText(value: string) {
@@ -961,8 +946,25 @@ function winAnsiCode(char: string) {
   return "?".charCodeAt(0);
 }
 
-function formatMoney(value: number | null, currency = "COP") {
-  if (value === null || !Number.isFinite(value)) {
+function formatSubcoverages(
+  subcoverages: AmendmentLiquidationRow["subamparos"],
+  currency: string,
+) {
+  return subcoverages
+    .filter((subcoverage) => subcoverage.incluido)
+    .map((subcoverage) => {
+      const sublimit =
+        subcoverage.valor_sublimite === null
+          ? ""
+          : ` (${formatMoney(subcoverage.valor_sublimite, currency)})`;
+
+      return `${subcoverage.nombre}${sublimit}`;
+    })
+    .join("; ");
+}
+
+function formatMoney(value: number | null | undefined, currency = "COP") {
+  if (value === null || typeof value === "undefined" || !Number.isFinite(value)) {
     return "Sin valor";
   }
 
@@ -1015,21 +1017,4 @@ function formatCompactDate(value: string | null) {
     day: "2-digit",
     timeZone: "UTC",
   }).format(date);
-}
-
-function formatCommercialObservation(value: string) {
-  const normalized = value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-
-  if (normalized.includes("cotizacion sujeta")) {
-    return "Cotización sujeta a aprobación final de la aseguradora.";
-  }
-
-  if (normalized.includes("no constituye poliza")) {
-    return "Esta cotización no constituye póliza emitida ni cobertura vigente hasta su expedición formal por la aseguradora.";
-  }
-
-  return value;
 }
