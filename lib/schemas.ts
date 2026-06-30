@@ -368,6 +368,9 @@ export const validateContractSchema = z.object({
       dias_vigencia: nullableInteger,
       iva_porcentaje: nullableNumber,
       prima_neta: nullableNumber,
+      prima_neta_automatica: nullableNumber,
+      prima_neta_manual: nullableNumber,
+      usar_prima_neta_manual: z.boolean().default(false),
       impuesto: nullableNumber,
       prima_total: nullableNumber,
       tasa_manual: z.boolean().default(false),
@@ -391,6 +394,10 @@ export const contractListQuerySchema = z.object({
   estado: z.enum(CONTRACT_STATES).optional(),
   search: z.string().optional(),
   vencen: z.enum(["30"]).optional(),
+});
+
+export const deleteContractSchema = z.object({
+  confirmacion: z.literal("ELIMINAR"),
 });
 
 const nullableRateRecord = z.record(

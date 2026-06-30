@@ -1,24 +1,94 @@
-# Muñeco Digital
+# AFISEC | Gestión de cotizaciones contractuales
 
-Muñeco Digital is a Next.js MVP for AFISEC, a Colombian insurance broker. It helps commercial executives upload contract PDFs, extract contract data with Azure AI, review and correct the results, and store validated structured records in Supabase.
+Aplicación interna para revisar contratos y órdenes, calcular amparos, generar
+cotizaciones versionadas y registrar la emisión de pólizas base. También soporta
+otrosíes secuenciales sobre una póliza emitida, con liquidación incremental,
+cotización de ajuste e histórico.
 
-The MVP validates whether AI can reliably support contract pre-reading. It does not issue policies, calculate premiums, track commissions, manage otrosí workflows, integrate with Softseguros, export reports, or implement authentication.
+La expedición real de la póliza o del otrosí ocurre fuera de esta aplicación. El
+sistema registra la emisión confirmada y conserva el snapshot que se convierte
+en punto de verdad para los pasos posteriores.
+
+## Estado funcional
+
+El repositorio contiene los flujos implementados en los Sprints 1, 2 y 3:
+
+- carga de contratos, órdenes de compra, órdenes de servicio y otrosíes;
+- extracción de texto con Azure AI Document Intelligence;
+- extracción estructurada con Azure OpenAI y validación Zod;
+- revisión humana de datos generales, fechas, valores y amparos;
+- cálculo determinístico de valores asegurados, vigencias y primas;
+- prima neta manual por amparo con cálculo automático conservado como referencia;
+- RCE/PLO como línea principal calculable y subamparos informativos;
+- manejo de anticipo, Acta de Inicio y Acta de Recibo Final;
+- cotizaciones base PDF con versiones y snapshots inmutables;
+- registro, bloqueo y reversión de la emisión de póliza base;
+- renovación manual de pólizas marcadas como renovables;
+- otrosíes secuenciales sobre el último estado emitido;
+- liquidación incremental por adición y prórroga;
+- cotizaciones de ajuste versionadas y emisión/reversión de otrosí;
+- histórico operativo de póliza base y otrosíes.
+- eliminación física protegida de contratos nunca emitidos;
+- versión y release visibles en el dashboard.
+
+No están implementados:
+
+- autenticación o autorización;
+- integración con SoftSeguros o portales de aseguradoras;
+- cúmulo y cupos;
+- notificaciones externas;
+- reportes gerenciales;
+- procesamiento mediante una cola durable.
+
+## Flujos principales
+
+### Contrato base
+
+```text
+Carga PDF
+  -> extracción IA
+  -> revisión editable
+  -> validación humana
+  -> cotización PDF versionada
+  -> registro de póliza emitida
+  -> bloqueo de edición directa
+```
+
+Validar la revisión no crea una versión. La versión nace al generar el PDF. Cada
+cotización guarda un snapshot independiente de los datos vivos del contrato.
+
+### Otrosí
+
+```text
+Póliza base emitida
+  -> carga del otrosí
+  -> extracción del delta
+  -> revisión editable
+  -> liquidación incremental
+  -> cotización de ajuste versionada
+  -> registro de otrosí emitido
+  -> nuevo estado vigente
+```
+
+Solo se permite un otrosí en revisión por contrato. El siguiente parte del
+snapshot resultante del último otrosí emitido. Internamente algunos identificadores
+históricos usan `amendment` o `endoso_emitido`; la interfaz comercial usa
+exclusivamente el término `Otrosí`.
 
 ## Stack
 
-- Next.js App Router with TypeScript
-- Tailwind CSS
-- Supabase PostgreSQL and Supabase Storage
-- Azure Document Intelligence for page-by-page OCR/text extraction
-- Azure OpenAI for strict JSON extraction
-- Zod validation for AI and API payloads
-- Vercel-compatible route handlers and background processing
+- Node.js 22.
+- Next.js 16 con App Router y Route Handlers.
+- React 19 y TypeScript.
+- Tailwind CSS 4.
+- Supabase PostgreSQL y Supabase Storage.
+- Azure AI Document Intelligence.
+- Azure OpenAI.
+- Zod.
 
-## Documentation
+Todas las rutas API que procesan datos usan runtime Node.js.
 
-- [Arquitectura del repositorio](./docs/ARCHITECTURE.md): estructura de carpetas, responsabilidades, flujo de datos, endpoints, seguridad y criterios para extender el MVP.
-
-## Setup
+## Configuración local
 
 ```bash
 npm install
@@ -26,24 +96,44 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+La aplicación queda disponible en `http://localhost:3000`.
 
-## Environment Variables
+## Variables de entorno
 
-All required variables are listed in `.env.example`.
+La lista fuente está en [.env.example](./.env.example).
 
-Only `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are safe for browser use. Azure keys and `SUPABASE_SERVICE_ROLE_KEY` are used only in server route handlers.
+| Variable | Uso | Exposición |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase. | Pública. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave anon de Supabase. | Pública. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Lecturas y escrituras protegidas desde Route Handlers. | Secreta, solo servidor. |
+| `AZURE_DOC_INTEL_ENDPOINT` | Endpoint de Document Intelligence. | Configuración de servidor. |
+| `AZURE_DOC_INTEL_KEY` | Credencial de Document Intelligence. | Secreta. |
+| `AZURE_OPENAI_ENDPOINT` | Endpoint de Azure OpenAI. | Configuración de servidor. |
+| `AZURE_OPENAI_KEY` | Credencial de Azure OpenAI. | Secreta. |
+| `AZURE_OPENAI_DEPLOYMENT_PRIMARY` | Deployment principal de extracción. | Configuración de servidor. |
+| `AZURE_OPENAI_DEPLOYMENT_FALLBACK` | Deployment usado para fallback. | Configuración de servidor. |
+| `AZURE_OPENAI_API_VERSION` | Versión de API de Azure OpenAI. | Configuración de servidor. |
+| `CONFIANZA_FALLBACK_THRESHOLD` | Umbral para activar fallback por baja confianza. | Configuración de servidor. |
+| `APP_BUILD_TIME` | Fecha/hora ISO opcional del build o despliegue. | Metadata no sensible. |
+| `APP_COMMIT_SHA` | Commit opcional mostrado en formato corto. | Metadata no sensible. |
 
-Azure OpenAI deployments must be configured through:
+Nunca se deben versionar `.env` o `.env.local`. Las claves de Azure y la service
+role de Supabase no se importan en componentes cliente.
 
-- `AZURE_OPENAI_DEPLOYMENT_PRIMARY`
-- `AZURE_OPENAI_DEPLOYMENT_FALLBACK`
+## Supabase
 
-No deployment name is hardcoded in the application.
+El repositorio no contiene una migración baseline que cree todo el esquema
+original. Contiene migraciones incrementales que deben aplicarse en orden:
 
-## Supabase Requirements
+1. `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql`
+2. `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql`
+3. `docs/supabase-migrations/20260518_cotizaciones_versionamiento_emision.sql`
+4. `docs/supabase-migrations/20260519_otrosies_endosos.sql`
+5. `docs/supabase-migrations/20260527_contratos_renovacion.sql`
+6. `docs/supabase-migrations/20260630_sprint4_prima_manual_eliminacion.sql`
 
-The existing schema must contain these tables with RLS enabled and no public policies:
+Tablas utilizadas por el código:
 
 - `clientes`
 - `contratos`
@@ -51,90 +141,119 @@ The existing schema must contain these tables with RLS enabled and no public pol
 - `amparos`
 - `extracciones`
 - `tasas_referencia`
+- `cotizaciones`
+- `modificaciones_contractuales`
+- `cotizaciones_ajuste`
 
-Create a private Supabase Storage bucket named `contratos`. The app uploads PDFs to that bucket through the service role key and does not expose storage paths or signed URLs to the browser.
+Los IDs del dominio usan `bigint/int8`. Las relaciones nuevas con contratos usan
+`contrato_id bigint references contratos(id)`.
 
-`tasas_referencia` is read-only in this MVP and is displayed during validation when amparo types match.
+### Storage
 
-## Azure Requirements
+Debe existir un bucket privado llamado `contratos`. En él se guardan:
 
-Document Intelligence must be reachable through `AZURE_DOC_INTEL_ENDPOINT` and `AZURE_DOC_INTEL_KEY`.
+- documentos originales;
+- PDFs de cotización base;
+- PDFs de cotización de ajuste.
 
-Azure OpenAI must support JSON schema response formatting for the configured deployment. The app still validates every response with Zod, retries invalid JSON once, and marks the contract as `error` if validation fails twice.
+Las cargas, descargas y generación de PDF pasan por el servidor. La aplicación
+no depende de almacenamiento persistente en el filesystem local.
 
-If 3 or more extracted fields have `confianza: "baja"` by default, the app retries with `AZURE_OPENAI_DEPLOYMENT_FALLBACK`. Adjust this with `CONFIANZA_FALLBACK_THRESHOLD`.
+### Registros y trazabilidad
 
-## Processing Flow
+| Evento | Registros afectados |
+| --- | --- |
+| Cargar contrato u orden | `clientes`, `contratos`, `documentos` y archivo en Storage. |
+| Procesar documento base | `extracciones`, actualización de `contratos` y filas de `amparos`. |
+| Validar revisión | actualización de `contratos` y reemplazo controlado de `amparos`. |
+| Generar cotización base | nueva fila en `cotizaciones` y PDF en Storage. |
+| Emitir o revertir póliza base | actualización de estado y fechas en `cotizaciones`. |
+| Cargar otrosí | `documentos` y nueva fila secuencial en `modificaciones_contractuales`. |
+| Revisar otrosí | liquidación y snapshots en `modificaciones_contractuales`. |
+| Generar cotización de ajuste | nueva fila en `cotizaciones_ajuste` y PDF en Storage. |
+| Emitir o revertir otrosí | actualización coordinada de `cotizaciones_ajuste` y `modificaciones_contractuales`. |
+| Eliminar contrato no emitido | borrado transaccional de dependencias; limpieza posterior de Storage. |
 
-1. Upload page creates or reuses a client.
-2. It creates a `contratos` row with state `cargado`.
-3. It uploads the PDF to Supabase Storage bucket `contratos`.
-4. It creates a `documentos` row.
-5. The frontend calls the processing endpoint.
-6. Processing sets state `procesando`, downloads the PDF server-side, runs Azure Document Intelligence, runs Azure OpenAI, logs `extracciones`, saves fields and amparos, then sets state `pendiente_validacion`.
-7. A human explicitly confirms validation before the contract can become `validado`.
+Las cotizaciones no se sobrescriben. Las versiones y emisiones revertidas se
+conservan para trazabilidad.
 
-On Vercel, processing uses `waitUntil()` from `@vercel/functions` so the endpoint can respond with `{ "status": "procesando" }` while work continues. In local development, processing runs synchronously as a safe fallback so the job does not silently die.
+## Cálculos y snapshots
 
-Long PDFs can still hit serverless execution limits. For production beyond this MVP, move processing to a durable queue or workflow worker.
+La IA extrae datos y evidencia, pero no es la fuente final de los cálculos.
+`lib/coverage-calculations.ts` calcula determinísticamente amparos base y
+`lib/amendments.ts` calcula ajustes incrementales.
 
-## Extraction and Coverage Calculations
+Las cotizaciones base y de ajuste guardan snapshots JSON. Las versiones
+históricas no dependen de filas vivas que puedan cambiar después.
 
-Azure Document Intelligence only extracts text from the PDF. Azure OpenAI reads that text and extracts rules, explicit fields and evidence fragments.
+Reglas centrales:
 
-The full AI JSON is stored only in `extracciones.json_original`; `contratos.extraido_ia` is a boolean flag. The OpenAI context now sends the complete PDF text when it fits under the MVP context limit. For longer PDFs, it keeps the first three pages plus prioritized pages and neighbors around clauses that mention value, payment, term, guarantees, amparos, policy, validity or final acceptance evidence.
-
-The processor estimates the PDF page count and compares it with the pages returned by Document Intelligence. If Azure returns only a small fraction of the document, processing stops with a clear error instead of saving a misleading partial extraction.
-
-Before data reaches Supabase, explicit mappers in `lib/processing.ts` and reusable normalizers in `lib/normalizers.ts` convert flexible AI output into flat, database-safe values. Required fields such as `moneda` fall back to `COP`, boolean fields stay boolean, invalid dates become `null`, and `NaN` or nested objects are never sent to rigid contract columns.
-
-OpenAI is not the final source for calculated coverage values. The backend calculates derived amparo values in `lib/coverage-calculations.ts`, including insured value and dates when the contract data is sufficient. If information is missing, ambiguous or low confidence, the amparo is marked for human review with `motivo_revision`.
-
-Fallback extraction is triggered not only by low confidence, but also when critical MVP fields are missing: contract value, term, start date, end date or useful amparos.
-
-Human validation is still mandatory before a contract can reach `validado`.
-
-## Amparo Liquidation
-
-Amparos are liquidated deterministically in `lib/coverage-calculations.ts`.
-
-Formula:
-
-```text
-prima_neta = valor_asegurado * tasa * dias_vigencia / 365
-impuesto = prima_neta * iva_porcentaje
-prima_total = prima_neta + impuesto
-```
-
-`dias_adicionales` is the contractual rule extracted from the clause. `dias_vigencia` is the actual day count between `fecha_desde` and `fecha_hasta`, and is the value used for premium calculation. The default IVA is `0.19`.
-
-Apply `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql` before using the liquidation fields. It adds premium fields to `amparos` and proposes `modificaciones_contractuales` for future otrosí/prórroga/adición support.
-
-Apply `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql` to persist the confirmed coverage calculation base at contract level. `base_calculo_amparos` is the value used by percentage-based amparos, and `base_calculo_incluye_iva` records whether that base includes VAT/IVA or remains undetermined.
-
-## Security Notes
-
-- Azure credentials never reach client components.
-- `SUPABASE_SERVICE_ROLE_KEY` is only imported by server route handlers and server utilities.
-- Client screens call `/api/*` endpoints for protected reads and writes.
-- Database writes happen only server-side.
-- PDF storage paths and signed URLs are not returned to the frontend.
-- No authentication is included in this MVP by request.
+- validar no crea versión;
+- generar PDF crea versión;
+- solo puede existir una póliza base emitida activa por contrato;
+- solo puede existir una versión emitida activa por otrosí;
+- una póliza emitida bloquea la validación directa del contrato;
+- RCE/PLO genera una sola prima principal;
+- los subamparos RCE son informativos;
+- impuesto de timbre es una alerta y no forma parte de la prima.
+- la prima manual, cuando está activa, reemplaza la prima neta automática y
+  recalcula IVA y total.
 
 ## Scripts
 
 ```bash
 npm run dev
 npm run lint
+npm test
 npm run build
+npm run start
 ```
 
-## Liquidación de responsabilidad civil
+`npm test` ejecuta las validaciones determinísticas de normalización, fechas,
+vigencias, valores periódicos y liquidación incremental ubicadas en
+`scripts/validate-normalizers.mjs`.
 
-Responsabilidad Civil Extracontractual se guarda como un solo amparo principal. PLO queda como `subamparo` calculable y los demás subamparos del bloque se conservan como detalle informativo, sin prima individual. La migración propuesta agrega `amparos.subamparos` en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql`.
+No hay todavía pruebas de navegador ni pruebas de integración contra Supabase.
 
-Los subamparos de RCE son editables en la validación: se pueden incluir/excluir y ajustar porcentaje o valor de sublímite. Si el contrato define una regla como 30% del PLO, se guarda como dato contractual; si viene de plantilla AFISEC, queda marcado para revisión.
+## Despliegue
 
-Los documentos tipo `otrosi` se cargan seleccionando el contrato base afectado. El documento queda asociado al contrato base y el procesamiento registra la modificación en `modificaciones_contractuales`; los amparos derivados del otrosí usan `amparos.modificacion_id`.
+El proyecto está preparado para Azure App Service Linux con Node 22:
 
-El amparo `buen_manejo_anticipo` se calcula sobre el valor del anticipo. Si el anticipo es porcentaje sin IVA, el backend usa valor sin IVA o deriva base sin IVA con IVA 19%; si falta evidencia, queda para revisión humana.
+```bash
+npm ci
+npm run build
+npm run start
+```
+
+La rama estable de despliegue es `main`. Las variables de entorno deben
+configurarse en App Service; no deben incluirse en el repositorio.
+
+En Azure el procesamiento de IA se ejecuta de forma síncrona dentro del Route
+Handler. Para documentos grandes o concurrencia alta, el paso futuro recomendado
+es mover extracción y procesamiento a una cola o worker durable.
+
+## Seguridad y límites actuales
+
+- No existe autenticación. El despliegue debe permanecer restringido hasta
+  incorporar control de acceso.
+- Los Route Handlers usan `SUPABASE_SERVICE_ROLE_KEY`; no deben exponerse como
+  endpoints públicos sin protección.
+- Los PDFs se reciben en memoria y no existe un límite explícito de tamaño en la
+  aplicación.
+- Varias operaciones combinan Storage y base de datos sin una transacción
+  distribuida; un fallo intermedio puede requerir limpieza operativa.
+- RLS debe mantenerse habilitado y sin políticas públicas para las tablas
+  operadas mediante service role.
+
+## Documentación
+
+- [Arquitectura actual](./docs/ARCHITECTURE.md)
+- [Sprint 1: auditoría inicial](./docs/Sprints/sprint_1_estado_actual_v1.md)
+- [Sprint 2: cotización y emisión](./docs/Sprints/sprint_2_cotizacion_emision_afisec.md)
+- [Sprint 3: otrosíes](./docs/Sprints/sprint_3_otrosies_endosos_afisec.md)
+- [Sprint 4: estabilización](./docs/Sprints/Sprint_04_Estabilizacion_MVP_AFISEC.md)
+
+Los documentos de Sprint conservan decisiones y referencias históricas. Cuando
+una referencia del archivo Excel difiere de una regla aprobada posteriormente,
+la regla implementada y sus pruebas determinísticas son la fuente técnica
+vigente.

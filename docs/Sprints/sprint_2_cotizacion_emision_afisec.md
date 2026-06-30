@@ -1,4 +1,10 @@
-# Sprint: Cotización, versionamiento, emisión y cierre visual de la V1
+# Sprint 2: Cotización, versionamiento, emisión y cierre visual de la V1
+
+> **Estado documental:** Sprint implementado. Las secciones 1 a 20 conservan la
+> especificación y los criterios utilizados antes de programar. La sección 21
+> documenta el resultado verificable en el repositorio actual. Los otrosíes
+> continuaron fuera del alcance de este Sprint y fueron implementados después en
+> Sprint 3.
 
 ## 1. Propósito del sprint
 
@@ -296,16 +302,16 @@ Incluir:
 
 ### 10.4 Colores
 
-Si existe logo o asset oficial en el proyecto, los colores deben derivarse de ahí.
+Los assets oficiales están versionados en `public/brand/`. La implementación
+vigente utiliza:
 
-Si no hay fuente oficial, se pueden usar como base provisional:
+- color principal AFISEC: `#d25b30`;
+- gris de tipografía: `#7a7a7a`;
+- fondos principales: `#ffffff`;
+- texto de alto contraste: `#111111`.
 
-- Naranja AFISEC: #F58220
-- Verde/teal AFISEC: #008C7A
-- Texto principal: #111111
-- Fondo claro: #F6F7F8
-
-No se debe saturar la interfaz con naranja. El naranja debe funcionar como acento para acciones principales, estados destacados o elementos de marca.
+El color principal funciona como énfasis y acción, sin dominar todas las
+superficies.
 
 ## 11. Funcionalidades concretas del sprint
 
@@ -429,7 +435,8 @@ El sprint se considera terminado cuando se pueda hacer este flujo completo:
 13. Ver la póliza en modo emitido/bloqueado.
 14. Confirmar que el PDF no muestra tasa ni fuentes internas.
 15. Confirmar que la interfaz tiene lineamiento AFISEC en inicio, carga, lista y detalle.
-16. Confirmar que no se implementó otrosí ni cúmulo.
+16. Confirmar que este Sprint no implementó otrosí ni cúmulo. Los otrosíes se
+    incorporaron posteriormente en Sprint 3.
 
 ## 16. Casos de prueba mínimos
 
@@ -522,3 +529,83 @@ Codex no debe implementar hasta que el plan sea revisado.
 
 Este sprint cierra la primera V1 comercial de AFISEC: desde la carga y revisión de un contrato base hasta la generación de cotización y la marca de póliza emitida. La cotización es editable y versionable antes de emitir. La póliza emitida queda bloqueada y se convierte en la base futura para otrosíes, cúmulo y seguimiento de cliente.
 
+## 21. Estado de implementación
+
+### 21.1 Alcance entregado
+
+El repositorio implementa:
+
+- generación de cotización base desde un contrato validado;
+- versión nueva únicamente al generar el PDF;
+- snapshot independiente por versión;
+- PDF comercial tabular con logo AFISEC local;
+- exclusión de tasa, fuentes, confianza y datos internos;
+- historial y descarga de versiones;
+- una sola póliza base emitida activa por contrato;
+- bloqueo backend de la validación cuando existe emisión activa;
+- resumen tabular de póliza emitida;
+- reversión de emisión sin borrar trazabilidad;
+- totales separados para garantías, responsabilidad civil y total general;
+- RCE/PLO como línea principal y subamparos informativos;
+- renovación manual para contratos marcados como renovables.
+
+### 21.2 Modelo y migración
+
+La migración de Sprint 2 es:
+
+- `docs/supabase-migrations/20260518_cotizaciones_versionamiento_emision.sql`
+
+La tabla `cotizaciones` usa:
+
+- `id bigserial`;
+- `contrato_id bigint references contratos(id)`;
+- `version`;
+- `estado`;
+- `snapshot jsonb`;
+- totales;
+- referencia al PDF;
+- fechas de generación, emisión y reversión.
+
+Las restricciones relevantes son:
+
+- `unique (contrato_id, version)`;
+- índice único parcial para una sola fila `emitida` por contrato.
+
+### 21.3 Módulos principales
+
+- `lib/quotes.ts`: snapshot, totales y validaciones comerciales.
+- `lib/quote-pdf.ts`: generación del PDF base.
+- `app/api/contracts/[id]/quotes/route.ts`: creación de versión y PDF.
+- `app/api/quotes/[id]/download/route.ts`: descarga.
+- `app/api/quotes/[id]/emit/route.ts`: emisión.
+- `app/api/quotes/[id]/revert/route.ts`: reversión.
+- `app/api/contracts/[id]/validate/route.ts`: bloqueo backend por emisión.
+- `components/contract-detail-client.tsx`: historial, emisión y resumen.
+
+### 21.4 Reglas confirmadas
+
+- Validar puede repetirse y no crea una cotización.
+- Una cotización histórica no se reconstruye desde datos vivos.
+- No se puede generar una nueva cotización base mientras exista una emisión
+  activa.
+- La emisión registrada en AFISEC representa una póliza expedida externamente.
+- Revertir la emisión habilita nuevamente el flujo editable sin eliminar
+  snapshots ni PDFs.
+
+### 21.5 Validaciones
+
+El cierre actual del repositorio pasa:
+
+```bash
+npm run lint
+npm test
+npm run build
+```
+
+### 21.6 Riesgos pendientes
+
+- No hay autenticación ni autorización.
+- Las operaciones de Storage e inserción en PostgreSQL no forman una transacción
+  distribuida.
+- No existen pruebas automatizadas de navegador ni de Route Handlers.
+- La emisión real en la aseguradora sigue siendo externa y no está integrada.

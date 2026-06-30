@@ -1,5 +1,11 @@
 # Sprint 1: Estado actual, auditoría de limpieza y preparación para Sprint 2
 
+> **Estado documental:** auditoría histórica realizada antes de implementar los
+> Sprints 2 y 3. Las afirmaciones sobre funcionalidades que "no existen aún"
+> describen ese checkpoint y no el estado actual del repositorio. Para la
+> arquitectura vigente consultar `README.md`, `docs/ARCHITECTURE.md` y las
+> secciones de cierre de los Sprints 2 y 3.
+
 ## 1. Resumen ejecutivo
 
 El repositorio está en un estado funcional estable para la V1 de revisión de contratos: permite cargar PDFs, procesarlos con Azure Document Intelligence y Azure OpenAI, guardar extracción estructurada, revisar datos generales, recalcular amparos, editar tasas y confirmar validación humana.
@@ -337,3 +343,22 @@ Antes de implementar Sprint 2, hacer una decisión corta de alcance:
 2. Definir el modelo mínimo de cotizaciones con snapshot y versión creada al generar PDF.
 3. Definir el modelo mínimo de emisión/bloqueo como capa nueva, sin tocar el pipeline IA ni cálculo de amparos.
 4. Implementar Sprint 2 en módulos nuevos y con pruebas sobre versionamiento, PDF sin datos internos y bloqueo de edición emitida.
+
+## 15. Resultado posterior de la auditoría
+
+Las recomendaciones centrales de esta auditoría fueron atendidas en los Sprints
+2 y 3:
+
+- la cotización base se implementó en módulos separados de extracción y cálculo;
+- cada PDF crea una versión con snapshot;
+- la póliza base emitida bloquea la validación directa;
+- los otrosíes solo operan sobre una póliza base emitida;
+- la infraestructura de `modificaciones_contractuales` se conservó y se integró
+  posteriormente en Sprint 3;
+- RCE/PLO, anticipo y fechas date-only permanecieron en sus módulos de cálculo
+  existentes;
+- se agregaron migraciones incrementales sin editar las migraciones históricas.
+
+Este documento debe conservarse como evidencia del estado previo y de los riesgos
+que guiaron la implementación. No debe utilizarse como inventario actual de rutas,
+componentes o tablas.

@@ -20,6 +20,14 @@ export type ExtractedPage = {
   text: string;
 };
 
+export type BaseDocumentType = "contrato_base" | "orden" | "orden_compra";
+
+export type PdfPageCountAssessment = {
+  pageCount: number | null;
+  reliable: boolean;
+  source: "catalog" | "page_objects" | "unavailable";
+};
+
 export type ContractExtractionContext = {
   text: string;
   pageNumbers: number[];
@@ -214,11 +222,73 @@ export function stringifyPages(pages: ExtractedPage[]) {
 }
 
 export function estimatePdfPageCount(pdf: ArrayBuffer) {
+  return inspectPdfPageCount(pdf).pageCount;
+}
+
+export function inspectPdfPageCount(
+  pdf: ArrayBuffer,
+): PdfPageCountAssessment {
   const pdfText = Buffer.from(pdf).toString("latin1");
+  const catalogPageCount = findCatalogPageCount(pdfText);
+
+  if (catalogPageCount !== null) {
+    return {
+      pageCount: catalogPageCount,
+      reliable: true,
+      source: "catalog",
+    };
+  }
+
   const pageMatches = pdfText.match(/\/Type\s*\/Page\b/g);
   const count = pageMatches?.length ?? 0;
 
-  return count > 0 ? count : null;
+  return count > 0
+    ? {
+        pageCount: count,
+        reliable: false,
+        source: "page_objects",
+      }
+    : {
+        pageCount: null,
+        reliable: false,
+        source: "unavailable",
+      };
+}
+
+function findCatalogPageCount(pdfText: string) {
+  const objects = new Map<string, string>();
+  const objectPattern = /(\d+)\s+(\d+)\s+obj\b([\s\S]*?)endobj/g;
+
+  for (const match of pdfText.matchAll(objectPattern)) {
+    objects.set(`${match[1]}:${match[2]}`, match[3]);
+  }
+
+  const catalogs = Array.from(objects.values()).filter((body) =>
+    /\/Type\s*\/Catalog\b/.test(body),
+  );
+
+  for (const catalog of catalogs.reverse()) {
+    const pagesReference = catalog.match(/\/Pages\s+(\d+)\s+(\d+)\s+R\b/);
+
+    if (!pagesReference) {
+      continue;
+    }
+
+    const pagesObject = objects.get(
+      `${pagesReference[1]}:${pagesReference[2]}`,
+    );
+    const countMatch =
+      pagesObject && /\/Type\s*\/Pages\b/.test(pagesObject)
+        ? pagesObject.match(/\/Count\s+(\d+)\b/)
+        : null;
+    const count = countMatch ? Number(countMatch[1]) : 0;
+
+    if (Number.isInteger(count) && count > 0) {
+      return count;
+    }
+  }
+
+  return null;
 }
 
 export function buildContractExtractionContext(
@@ -435,13 +505,18 @@ function normalizeForSearch(text: string) {
  * read. It is deliberately verbose because incomplete clauses are the riskiest
  * part of the MVP.
  */
-function buildExtractionPrompt(extractedText: string, retrying: boolean) {
+function buildExtractionPrompt(
+  extractedText: string,
+  retrying: boolean,
+  documentType: BaseDocumentType,
+) {
   const retryInstruction = retrying
     ? "La respuesta anterior no cumplió el esquema. Corrige el JSON y respeta exactamente la estructura solicitada."
     : "Devuelve solamente JSON valido que cumpla el esquema.";
 
   return [
     retryInstruction,
+    getBaseDocumentTypeInstruction(documentType),
     "Analiza el texto completo por paginas. No te limites a las primeras paginas.",
     "Extrae numero de contrato, tipo, partes, objeto, valor total, moneda, fechas, plazo y garantias/amparos.",
     "Para valor_contrato usa el valor total del contrato. Si aparecen presupuesto mensual, IVA, valor mensual y valor total, extrae el valor total final e incluye el fragmento fuente.",
@@ -490,6 +565,7 @@ export function countLowConfidenceFields(extraction: AIExtraction) {
 export async function extractStructuredContract(
   deployment: string,
   extractedText: string,
+  documentType: BaseDocumentType,
 ) {
   let lastRawContent: string | null = null;
   let lastValidationError: string | null = null;
@@ -519,7 +595,11 @@ export async function extractStructuredContract(
         },
         {
           role: "user",
-          content: buildExtractionPrompt(extractedText, attempt > 1),
+          content: buildExtractionPrompt(
+            extractedText,
+            attempt > 1,
+            documentType,
+          ),
         },
       ],
       response_format: zodResponseFormat(
@@ -558,6 +638,20 @@ export async function extractStructuredContract(
     `Azure OpenAI devolvió JSON inválido: ${lastValidationError ?? "sin detalle"}`,
     lastRawContent,
   );
+}
+
+function getBaseDocumentTypeInstruction(documentType: BaseDocumentType) {
+  const labels: Record<BaseDocumentType, string> = {
+    contrato_base: "contrato base",
+    orden: "orden de servicio",
+    orden_compra: "orden de compra",
+  };
+
+  return [
+    `El usuario clasificó el documento como ${labels[documentType]}.`,
+    "Trátalo como documento base contractual y extrae los mismos campos del contrato base.",
+    "No lo interpretes como otrosí ni como modificación de una póliza emitida.",
+  ].join(" ");
 }
 
 function buildAmendmentExtractionPrompt(extractedText: string, retrying: boolean) {

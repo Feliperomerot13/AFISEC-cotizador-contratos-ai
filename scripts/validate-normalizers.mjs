@@ -3,6 +3,7 @@ import {
   calculateAmendmentLiquidation,
   calculateAmendmentTotalsByBlock,
 } from "../lib/amendments.ts";
+import { inspectPdfPageCount } from "../lib/ai.ts";
 import { normalizeCoverage } from "../lib/coverage-calculations.ts";
 import { formatDate } from "../lib/format.ts";
 import {
@@ -16,9 +17,14 @@ import {
 import {
   applyDeterministicAmendmentFallbacksForTest,
   applyDeterministicContractFallbacksForTest,
+  evaluateDocumentIntelligencePageCoverage,
   mapExtractionToContractUpdate,
 } from "../lib/processing.ts";
-import { aiExtractionSchema, amendmentExtractionSchema } from "../lib/schemas.ts";
+import {
+  aiExtractionSchema,
+  amendmentExtractionSchema,
+  deleteContractSchema,
+} from "../lib/schemas.ts";
 
 assert.equal(normalizeCurrency(null), "COP");
 assert.equal(normalizeCurrency("$"), "COP");
@@ -44,6 +50,70 @@ assert.equal(normalizeNumber("$ 1.200.000.000"), 1200000000);
 assert.equal(normalizeNumber("1,200,000,000"), 1200000000);
 assert.equal(normalizeNumber("número inválido"), null);
 assert.match(formatDate("2026-12-25"), /25/);
+assert.deepEqual(deleteContractSchema.parse({ confirmacion: "ELIMINAR" }), {
+  confirmacion: "ELIMINAR",
+});
+assert.throws(() =>
+  deleteContractSchema.parse({ confirmacion: "eliminar" }),
+);
+
+const syntheticPdfWithReliableCount = new TextEncoder().encode(
+  [
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+    "2 0 obj << /Type /Pages /Count 21 /Kids [] >> endobj",
+    ...Array.from(
+      { length: 31 },
+      (_, index) =>
+        `${index + 10} 0 obj << /Type /Page /Parent 2 0 R >> endobj`,
+    ),
+  ].join("\n"),
+).buffer;
+const reliablePageCount = inspectPdfPageCount(
+  syntheticPdfWithReliableCount,
+);
+assert.deepEqual(reliablePageCount, {
+  pageCount: 21,
+  reliable: true,
+  source: "catalog",
+});
+assert.equal(
+  evaluateDocumentIntelligencePageCoverage({
+    pageCountAssessment: reliablePageCount,
+    extractedPageCount: 21,
+  }).shouldBlock,
+  false,
+);
+
+const fragilePdfEstimate = new TextEncoder().encode(
+  Array.from(
+    { length: 31 },
+    (_, index) => `${index + 1} 0 obj << /Type /Page >> endobj`,
+  ).join("\n"),
+).buffer;
+const fragilePageCount = inspectPdfPageCount(fragilePdfEstimate);
+assert.deepEqual(fragilePageCount, {
+  pageCount: 31,
+  reliable: false,
+  source: "page_objects",
+});
+assert.equal(
+  evaluateDocumentIntelligencePageCoverage({
+    pageCountAssessment: fragilePageCount,
+    extractedPageCount: 21,
+  }).shouldBlock,
+  false,
+);
+assert.equal(
+  evaluateDocumentIntelligencePageCoverage({
+    pageCountAssessment: {
+      pageCount: 31,
+      reliable: true,
+      source: "catalog",
+    },
+    extractedPageCount: 21,
+  }).shouldBlock,
+  true,
+);
 
 const monthlyContractUpdate = mapExtractionToContractUpdate(
   buildContractExtraction({
@@ -369,6 +439,66 @@ assert.equal(complianceCoverage.dias_vigencia, 396);
 assert.equal(complianceCoverage.prima_neta, 1640591.55);
 assert.equal(complianceCoverage.impuesto, 311712.39);
 assert.equal(complianceCoverage.prima_total, 1952303.94);
+
+const manualPremiumCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    cuantia_fija: null,
+    valor_asegurado: null,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 30,
+    fecha_desde: null,
+    fecha_hasta: null,
+    fuente_texto: "Cumplimiento equivalente al treinta por ciento del contrato.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+    iva_porcentaje: 0.19,
+    usar_prima_neta_manual: true,
+    prima_neta_manual: 500000,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(manualPremiumCoverage.prima_neta_automatica, 1640591.55);
+assert.equal(manualPremiumCoverage.prima_neta_manual, 500000);
+assert.equal(manualPremiumCoverage.usar_prima_neta_manual, true);
+assert.equal(manualPremiumCoverage.prima_neta, 500000);
+assert.equal(manualPremiumCoverage.impuesto, 95000);
+assert.equal(manualPremiumCoverage.prima_total, 595000);
+
+const automaticPremiumCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.3,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 30,
+    fuente_texto: "Cumplimiento equivalente al treinta por ciento del contrato.",
+    fuente_pagina: 10,
+    confianza: "alta",
+    tasa: 0.002,
+    iva_porcentaje: 0.19,
+    usar_prima_neta_manual: false,
+    prima_neta_manual: 500000,
+  },
+  {
+    valorContrato: 2520269003,
+    fechaInicio: "2024-02-02",
+    fechaFin: "2025-02-02",
+  },
+);
+
+assert.equal(
+  automaticPremiumCoverage.prima_neta,
+  automaticPremiumCoverage.prima_neta_automatica,
+);
 
 const contractualStartBaseCoverage = normalizeCoverage(
   {

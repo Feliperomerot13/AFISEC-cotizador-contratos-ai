@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
   Fragment,
   FormEvent,
@@ -115,6 +116,8 @@ type EditableAmparo = {
   dias_adicionales: string;
   dias_vigencia: string;
   prima_neta: string;
+  prima_neta_manual: string;
+  usar_prima_neta_manual: boolean;
   impuesto: string;
   prima_total: string;
   valor_base_calculo: string;
@@ -154,6 +157,7 @@ const emptyForm: ContractForm = {
 };
 
 export function ContractDetailClient({ contractId }: { contractId: string }) {
+  const router = useRouter();
   const [detail, setDetail] = useState<DetailResponse | null>(null);
   const [form, setForm] = useState<ContractForm>(emptyForm);
   const [amparos, setAmparos] = useState<EditableAmparo[]>([]);
@@ -161,6 +165,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [quoteAction, setQuoteAction] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -296,6 +301,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               dias_vigencia: calculation.dias_vigencia,
               iva_porcentaje: calculation.iva_porcentaje,
               prima_neta: calculation.prima_neta,
+              prima_neta_automatica: calculation.prima_neta_automatica,
+              prima_neta_manual: calculation.prima_neta_manual,
+              usar_prima_neta_manual: calculation.usar_prima_neta_manual,
               impuesto: calculation.impuesto,
               prima_total: calculation.prima_total,
               tasa_manual: amparo.tasa_manual,
@@ -427,6 +435,55 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     );
   }
 
+  async function onDeleteContract() {
+    const confirmation = window.prompt(
+      "Esta acción elimina permanentemente el contrato no emitido, sus documentos, cotizaciones de prueba y otrosíes no emitidos. Escribe ELIMINAR para continuar.",
+    );
+
+    if (confirmation === null) {
+      return;
+    }
+
+    if (confirmation !== "ELIMINAR") {
+      setError("Confirmación incorrecta. El contrato no fue eliminado.");
+      return;
+    }
+
+    setIsDeleting(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch(`/api/contracts/${contractId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmacion: confirmation }),
+      });
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(body.error ?? "No se pudo eliminar el contrato.");
+      }
+
+      if (Array.isArray(body.storageWarnings) && body.storageWarnings.length > 0) {
+        window.alert(
+          `El contrato fue eliminado, pero quedaron archivos por limpiar en Storage:\n${body.storageWarnings.join("\n")}`,
+        );
+      }
+
+      router.push("/contratos");
+      router.refresh();
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "No se pudo eliminar el contrato.",
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500 shadow-sm">
@@ -447,6 +504,22 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const activeIssuedQuote =
     quotes.find((quote) => quote.estado === "emitida") ?? null;
   const isIssuedLocked = Boolean(activeIssuedQuote);
+  const hasIssuedHistory =
+    quotes.some(
+      (quote) =>
+        quote.fecha_emision !== null ||
+        ["emitida", "emision_revertida"].includes(quote.estado),
+    ) ||
+    detail.cotizacionesAjuste.some(
+      (quote) =>
+        quote.fecha_emision !== null ||
+        ["endoso_emitido", "emision_revertida"].includes(quote.estado),
+    ) ||
+    detail.modificaciones.some(
+      (modification) =>
+        modification.aplicada_en !== null ||
+        ["endoso_emitido", "aplicada"].includes(modification.estado),
+    );
   const canGenerateQuote =
     detail.contract.estado === "validado" && !isIssuedLocked;
   const renewalExpirationAlert = getRenewalExpirationAlert(
@@ -473,6 +546,19 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           <p className="text-sm text-neutral-500">
             Procesado: {formatDate(detail.contract.fecha_procesamiento)}
           </p>
+          <button
+            type="button"
+            disabled={hasIssuedHistory || isDeleting}
+            onClick={onDeleteContract}
+            title={
+              hasIssuedHistory
+                ? "Los contratos con trazabilidad emitida no pueden eliminarse."
+                : "Eliminar contrato no emitido"
+            }
+            className="h-9 rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-400"
+          >
+            {isDeleting ? "Eliminando..." : "Eliminar contrato"}
+          </button>
         </div>
       </div>
 
@@ -801,7 +887,8 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                     />
                     <EditableAmparoField
                       label={isAdvanceCoverage ? "Porcentaje anticipo %" : "Porcentaje %"}
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       value={
                         isAdvanceCoverage
                           ? percentFromDecimal(calculation.porcentaje)
@@ -902,12 +989,47 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       help="Digite 0.20 para una tasa de 0,20%. No use 20."
                       warning={rateIssue}
                     />
+                    <label className="flex min-h-10 items-center gap-3 rounded-lg border border-neutral-300 bg-white px-3 py-2 md:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={amparo.usar_prima_neta_manual}
+                        onChange={(event) =>
+                          updateAmparo(
+                            index,
+                            "usar_prima_neta_manual",
+                            event.target.checked,
+                          )
+                        }
+                        className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-neutral-800">
+                          Usar prima neta manual
+                        </span>
+                        <span className="block text-xs leading-5 text-neutral-500">
+                          Mantiene este valor aunque cambien tasa, fechas o días.
+                        </span>
+                      </span>
+                    </label>
+                    {amparo.usar_prima_neta_manual ? (
+                      <EditableAmparoField
+                        label="Prima neta manual"
+                        type="text"
+                        inputMode="decimal"
+                        value={amparo.prima_neta_manual}
+                        onChange={(value) =>
+                          updateAmparo(index, "prima_neta_manual", value)
+                        }
+                        help="El IVA y la prima total se calculan sobre este valor."
+                      />
+                    ) : null}
                   </div>
 
                   <div className="mt-4 grid gap-4 md:grid-cols-[0.5fr_1.5fr_auto] md:items-end">
                     <EditableAmparoField
                       label="Días adicionales"
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       value={amparo.dias_adicionales}
                       onChange={(value) =>
                         updateAmparo(index, "dias_adicionales", value)
@@ -961,12 +1083,25 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       value={calculation.dias_vigencia?.toString() ?? "Sin dato"}
                     />
                     <ReadOnlyMetric
-                      label="Prima neta"
+                      label={
+                        calculation.usar_prima_neta_manual
+                          ? "Prima neta manual aplicada"
+                          : "Prima neta"
+                      }
                       value={formatCurrency(
                         calculation.prima_neta,
                         form.moneda || "COP",
                       )}
                     />
+                    {calculation.usar_prima_neta_manual ? (
+                      <ReadOnlyMetric
+                        label="Prima automática de referencia"
+                        value={formatCurrency(
+                          calculation.prima_neta_automatica,
+                          form.moneda || "COP",
+                        )}
+                      />
+                    ) : null}
                     <ReadOnlyMetric
                       label="IVA"
                       value={formatCurrency(
@@ -2252,6 +2387,11 @@ function amparoToEditable(
     dias_vigencia:
       amparo.dias_vigencia === null ? "" : String(amparo.dias_vigencia),
     prima_neta: amparo.prima_neta === null ? "" : String(amparo.prima_neta),
+    prima_neta_manual:
+      amparo.prima_neta_manual == null
+        ? ""
+        : String(amparo.prima_neta_manual),
+    usar_prima_neta_manual: amparo.usar_prima_neta_manual ?? false,
     impuesto: amparo.impuesto === null ? "" : String(amparo.impuesto),
     prima_total: amparo.prima_total === null ? "" : String(amparo.prima_total),
     valor_base_calculo:
@@ -2290,6 +2430,8 @@ function newAmparo(): EditableAmparo {
     dias_adicionales: "",
     dias_vigencia: "",
     prima_neta: "",
+    prima_neta_manual: "",
+    usar_prima_neta_manual: false,
     impuesto: "",
     prima_total: "",
     valor_base_calculo: "",
@@ -2850,6 +2992,8 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
       valor_base_calculo: numberOrNull(amparo.valor_base_calculo),
       tasa: decimalFromRatePercent(amparo.tasa),
       tasa_manual: amparo.tasa_manual,
+      usar_prima_neta_manual: amparo.usar_prima_neta_manual,
+      prima_neta_manual: numberOrNull(amparo.prima_neta_manual),
       iva_porcentaje:
         numberOrNull(amparo.iva_porcentaje) ?? DEFAULT_IVA_PERCENTAGE,
       tipo_vigencia: amparo.tipo_vigencia || null,

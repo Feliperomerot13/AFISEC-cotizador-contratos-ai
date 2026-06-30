@@ -136,6 +136,9 @@ export type Database = {
           dias_vigencia: number | null;
           iva_porcentaje: number;
           prima_neta: number | null;
+          prima_neta_automatica: number | null;
+          prima_neta_manual: number | null;
+          usar_prima_neta_manual: boolean;
           impuesto: number | null;
           prima_total: number | null;
           tasa_manual: boolean;
@@ -168,6 +171,9 @@ export type Database = {
           dias_vigencia?: number | null;
           iva_porcentaje?: number;
           prima_neta?: number | null;
+          prima_neta_automatica?: number | null;
+          prima_neta_manual?: number | null;
+          usar_prima_neta_manual?: boolean;
           impuesto?: number | null;
           prima_total?: number | null;
           tasa_manual?: boolean;
@@ -440,7 +446,14 @@ export type Database = {
       }>;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      eliminar_contrato_no_emitido: {
+        Args: {
+          p_contrato_id: DbInt8;
+        };
+        Returns: Json;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

@@ -26,15 +26,17 @@ import {
 import {
   buildContractExtractionContext,
   countLowConfidenceFields,
-  estimatePdfPageCount,
   extractPdfTextByPage,
   extractStructuredAmendment,
   extractStructuredContract,
+  inspectPdfPageCount,
   InvalidAIJsonError,
   stringifyPages,
+  type BaseDocumentType,
   type OpenAIAmendmentExtractionResult,
   type OpenAIExtractionResult,
   type PageSelectionDetail,
+  type PdfPageCountAssessment,
 } from "@/lib/ai";
 import { getErrorMessage } from "@/lib/api";
 import type { AIExtraction, AmendmentExtraction } from "@/lib/schemas";
@@ -124,20 +126,20 @@ export async function processContract(contratoId: DbInt8) {
     }
 
     const pdfBuffer = await storedFile.arrayBuffer();
-    const estimatedPageCount = estimatePdfPageCount(pdfBuffer);
+    const pageCountAssessment = inspectPdfPageCount(pdfBuffer);
     const extractedPages = await extractPdfTextByPage(pdfBuffer);
     const textoExtraido = stringifyPages(extractedPages);
     context.textoExtraido = textoExtraido;
 
     assertDocumentIntelligencePageCoverage({
-      estimatedPageCount,
+      pageCountAssessment,
       extractedPageCount: extractedPages.length,
     });
     const extractionContext = buildContractExtractionContext(extractedPages);
 
     logExtractionContextForDevelopment({
       totalPages: extractedPages.length,
-      estimatedPageCount,
+      pageCountAssessment,
       fullText: textoExtraido,
       openAiContext: extractionContext.text,
       openAiPages: extractionContext.pageNumbers,
@@ -148,6 +150,9 @@ export async function processContract(contratoId: DbInt8) {
     });
 
     const env = getServerEnv();
+    const baseDocumentType = normalizeBaseDocumentType(
+      documento.tipo_documento,
+    );
 
     if (documento.tipo_documento === "otrosi") {
       await processAmendmentExtraction({
@@ -168,6 +173,7 @@ export async function processContract(contratoId: DbInt8) {
       await extractStructuredContract(
         env.AZURE_OPENAI_DEPLOYMENT_PRIMARY,
         extractionContext.text,
+        baseDocumentType,
       ),
       extractionContext.text,
     );
@@ -214,6 +220,7 @@ export async function processContract(contratoId: DbInt8) {
         await extractStructuredContract(
           env.AZURE_OPENAI_DEPLOYMENT_FALLBACK,
           extractionContext.text,
+          baseDocumentType,
         ),
         extractionContext.text,
       );
@@ -457,12 +464,12 @@ export async function processAmendmentDocument({
   }
 
   const pdfBuffer = await storedFile.arrayBuffer();
-  const estimatedPageCount = estimatePdfPageCount(pdfBuffer);
+  const pageCountAssessment = inspectPdfPageCount(pdfBuffer);
   const extractedPages = await extractPdfTextByPage(pdfBuffer);
   const extractedText = stringifyPages(extractedPages);
 
   assertDocumentIntelligencePageCoverage({
-    estimatedPageCount,
+    pageCountAssessment,
     extractedPageCount: extractedPages.length,
   });
 
@@ -471,7 +478,7 @@ export async function processAmendmentDocument({
 
   logExtractionContextForDevelopment({
     totalPages: extractedPages.length,
-    estimatedPageCount,
+    pageCountAssessment,
     fullText: extractedText,
     openAiContext: extractionContext.text,
     openAiPages: extractionContext.pageNumbers,
@@ -1879,6 +1886,9 @@ function mapExtractionToCoverageMapping(
       dias_vigencia: normalized.dias_vigencia,
       iva_porcentaje: normalized.iva_porcentaje,
       prima_neta: normalized.prima_neta,
+      prima_neta_automatica: normalized.prima_neta_automatica,
+      prima_neta_manual: normalized.prima_neta_manual,
+      usar_prima_neta_manual: normalized.usar_prima_neta_manual,
       impuesto: normalized.impuesto,
       prima_total: normalized.prima_total,
       tasa_manual: normalized.tasa_manual,
@@ -3324,6 +3334,12 @@ function validateCoverageRow(row: CoverageInsert): CoverageInsert {
     dias_vigencia: normalizeInteger(row.dias_vigencia),
     iva_porcentaje: normalizeNumber(row.iva_porcentaje) ?? 0.19,
     prima_neta: normalizeNumber(row.prima_neta),
+    prima_neta_automatica: normalizeNumber(row.prima_neta_automatica),
+    prima_neta_manual: normalizeNumber(row.prima_neta_manual),
+    usar_prima_neta_manual: normalizeBoolean(
+      row.usar_prima_neta_manual,
+      false,
+    ),
     impuesto: normalizeNumber(row.impuesto),
     prima_total: normalizeNumber(row.prima_total),
     tasa_manual: normalizeBoolean(row.tasa_manual, false),
@@ -3682,7 +3698,7 @@ async function updateContractOrThrow(
 
 function logExtractionContextForDevelopment({
   totalPages,
-  estimatedPageCount,
+  pageCountAssessment,
   fullText,
   openAiContext,
   openAiPages,
@@ -3692,7 +3708,7 @@ function logExtractionContextForDevelopment({
   fileName,
 }: {
   totalPages: number;
-  estimatedPageCount: number | null;
+  pageCountAssessment: PdfPageCountAssessment;
   fullText: string;
   openAiContext: string;
   openAiPages: number[];
@@ -3714,8 +3730,12 @@ function logExtractionContextForDevelopment({
   }
   console.info("[Document Intelligence] páginas extraídas:", totalPages);
   console.info(
-    "[Document Intelligence] páginas estimadas en PDF:",
-    estimatedPageCount ?? "no disponible",
+    "[Document Intelligence] conteo de páginas del PDF:",
+    pageCountAssessment.pageCount ?? "no disponible",
+    {
+      fuente: pageCountAssessment.source,
+      confiable: pageCountAssessment.reliable,
+    },
   );
   console.info("[Document Intelligence] longitud total:", fullText.length);
   console.info(
@@ -3842,6 +3862,9 @@ function logCoverageRowsForDevelopment(mapping: CoverageMappingResult) {
       tasa: row.tasa,
       iva_porcentaje: row.iva_porcentaje,
       prima_neta: row.prima_neta,
+      prima_neta_automatica: row.prima_neta_automatica,
+      prima_neta_manual: row.prima_neta_manual,
+      usar_prima_neta_manual: row.usar_prima_neta_manual,
       impuesto: row.impuesto,
       prima_total: row.prima_total,
       tasa_manual: row.tasa_manual,
@@ -3891,44 +3914,85 @@ function looksLikeBaseContract(fileName: string, fullText: string) {
   );
 }
 
-function assertDocumentIntelligencePageCoverage({
-  estimatedPageCount,
+export function evaluateDocumentIntelligencePageCoverage({
+  pageCountAssessment,
   extractedPageCount,
 }: {
-  estimatedPageCount: number | null;
+  pageCountAssessment: PdfPageCountAssessment;
   extractedPageCount: number;
 }) {
+  const estimatedPageCount = pageCountAssessment.pageCount;
   const missingPageCount =
     estimatedPageCount === null ? 0 : estimatedPageCount - extractedPageCount;
   const coverageRatio =
     estimatedPageCount === null ? 1 : extractedPageCount / estimatedPageCount;
+  const shouldBlock =
+    pageCountAssessment.reliable &&
+    estimatedPageCount !== null &&
+    estimatedPageCount >= 6 &&
+    missingPageCount > MAX_TOLERATED_MISSING_PAGES &&
+    coverageRatio < MIN_DOCUMENT_INTELLIGENCE_PAGE_COVERAGE_RATIO;
 
-  if (
-    estimatedPageCount === null ||
-    estimatedPageCount < 6 ||
-    missingPageCount <= MAX_TOLERATED_MISSING_PAGES ||
-    coverageRatio >= MIN_DOCUMENT_INTELLIGENCE_PAGE_COVERAGE_RATIO
-  ) {
+  return {
+    shouldBlock,
+    expectedPageCount: estimatedPageCount,
+    extractedPageCount,
+    missingPageCount,
+    coverageRatio,
+    reliable: pageCountAssessment.reliable,
+    source: pageCountAssessment.source,
+  };
+}
+
+function assertDocumentIntelligencePageCoverage({
+  pageCountAssessment,
+  extractedPageCount,
+}: {
+  pageCountAssessment: PdfPageCountAssessment;
+  extractedPageCount: number;
+}) {
+  const decision = evaluateDocumentIntelligencePageCoverage({
+    pageCountAssessment,
+    extractedPageCount,
+  });
+
+  if (!decision.shouldBlock) {
+    if (
+      !decision.reliable &&
+      decision.expectedPageCount !== null &&
+      decision.missingPageCount > MAX_TOLERATED_MISSING_PAGES
+    ) {
+      console.warn(
+        "[Document Intelligence] conteo aproximado no bloqueante:",
+        decision,
+      );
+    }
+
     return;
   }
 
   const message = [
-    `Document Intelligence devolvió ${extractedPageCount} de aproximadamente ${estimatedPageCount} páginas del PDF.`,
+    `Document Intelligence devolvió ${extractedPageCount} de ${decision.expectedPageCount} páginas confirmadas en el PDF.`,
     "La extracción se detuvo para evitar guardar una lectura incompleta como si fuera válida.",
     "Revisa si Azure Document Intelligence está usando un tier con límite de páginas, si el PDF subido está completo o si el servicio rechazó páginas posteriores.",
   ].join(" ");
 
   if (process.env.NODE_ENV === "development") {
     console.error("[Document Intelligence] cobertura insuficiente:", {
-      estimatedPageCount,
-      extractedPageCount,
-      missingPageCount,
-      coverageRatio,
+      ...decision,
       message,
     });
   }
 
   throw new Error(message);
+}
+
+function normalizeBaseDocumentType(value: string): BaseDocumentType {
+  if (value === "orden" || value === "orden_compra") {
+    return value;
+  }
+
+  return "contrato_base";
 }
 
 function logContractUpdateForDevelopment(

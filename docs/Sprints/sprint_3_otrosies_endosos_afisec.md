@@ -1,4 +1,10 @@
-# Sprint 3: Otrosíes, cotización de ajuste y endosos sobre póliza emitida
+# Sprint 3: Otrosíes y cotización de ajuste sobre póliza emitida
+
+> **Estado documental:** Sprint implementado. Las secciones 1 a 19 conservan la
+> propuesta técnica y las referencias funcionales previas. La sección 20
+> documenta el resultado implementado. En la experiencia visible se usa
+> `Otrosí`; `endoso_emitido` y `amendment` permanecen únicamente como nombres
+> técnicos históricos para evitar una migración o refactor de riesgo.
 
 ## 1. Propósito del sprint
 
@@ -598,6 +604,11 @@ Nota importante: la liquidación ubica visualmente la prima de RCE en la fila `R
 
 ### 19.3 Resumen de Otrosí 1 a Otrosí 5
 
+La tabla siguiente transcribe los documentos y la liquidación Excel de
+referencia. Sus columnas de días y primas no reemplazan las decisiones
+funcionales aprobadas posteriormente durante las pruebas. Las diferencias
+conocidas se documentan en la sección 19.4.1.
+
 | Otrosí | Archivo | Fecha firma | Fecha fin anterior | Nueva fecha fin | Valor adicionado | Valor acumulado esperado | Días liquidación | Cambio de objeto | Ajuste garantías | Timbre |
 | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
 | 1 | `Otrosi No.1 (1).pdf` | `31/01/2025` | `02/02/2025` | `02/03/2025` | `$203.093.584` | `$2.723.362.587` | 29 | Sí: servicio pasa de seis a cinco grúas. | Sí | No menciona. |
@@ -617,6 +628,31 @@ La liquidación de referencia separa garantías y RCE. Los totales combinados de
 | 3 | `$1.717.732` | `$2.044.101` | `$417.808` | `$497.192` | `$2.541.293` |
 | 4 | `$1.474.532` | `$1.754.693` | `$205.479` | `$244.521` | `$1.999.214` |
 | 5 | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
+
+### 19.4.1 Regla funcional aprobada después de revisar el Excel
+
+El Excel se conserva como referencia comercial, pero el sistema no copia
+ciegamente sus encabezados ni sus conteos. La regla vigente deriva los días de
+prórroga mediante diferencia date-only entre las fechas revisadas:
+
+| Caso | Fechas revisadas | Días funcionales | Total validado en pruebas |
+| --- | --- | ---: | ---: |
+| Otrosí 1 | `02/02/2025` a `02/03/2025` | 28 | `$941.509` |
+| Otrosí 2 | `02/03/2025` a `02/04/2025` | 31 | `$1.060.727` |
+
+Por tanto, los valores de 29 y 30 días y los totales combinados de las tablas
+19.3 y 19.4 deben leerse como transcripción del archivo de referencia, no como
+asserts vigentes de la implementación.
+
+Para Otrosí 3 quedó confirmada la regla adicional:
+
+- valor mensual `$203.093.584` por abril y mayo;
+- dos periodos;
+- valor adicionado total `$406.187.168`;
+- días de adición calculados por la vigencia propia de cada amparo;
+- 516 días para cumplimiento y calidad;
+- 1.582 días para salarios;
+- RCE/PLO sin prima por adición cuando la cuantía fija no cambia.
 
 Detalle esperado por amparo porcentual:
 
@@ -727,7 +763,10 @@ Quedó implementado el flujo operativo de otrosíes sobre póliza base emitida:
 9. Emisión de otrosí desde una cotización de ajuste.
 10. Reversión de emisión únicamente para el último otrosí emitido activo.
 11. Histórico principal con póliza base, otrosíes emitidos y el otrosí actual en revisión.
-12. Eliminación de otrosíes no emitidos para no contaminar el histórico operativo.
+12. Cierre operativo de otrosíes no emitidos para no contaminar el histórico.
+    La acción visible se llama `Eliminar otrosí`, pero el backend conserva
+    trazabilidad mediante estados `anulado` o `no_aplicable`; no realiza borrado
+    físico.
 
 ### 20.2 Decisiones de producto aplicadas
 
@@ -755,7 +794,10 @@ La migración mantiene el patrón real del proyecto:
 - Tabla `cotizaciones_ajuste` para versionamiento de cotizaciones de ajuste.
 - Índice único parcial para evitar más de una cotización de ajuste emitida activa por otrosí.
 - Índice parcial para impedir más de un otrosí pendiente por contrato.
-- Estados terminales suficientes para cerrar errores o pruebas: `eliminado`, `anulado`, `no_aplicable`, `otrosi_emitido`.
+- Estados terminales utilizados: `anulado`, `no_aplicable` y
+  `endoso_emitido`. Los textos visibles correspondientes son `Eliminado` y
+  `Otrosí emitido`; `eliminado` y `otrosi_emitido` no son estados de base de
+  datos.
 
 También existe una migración posterior de renovación/prórroga de póliza base:
 
@@ -814,6 +856,39 @@ Validaciones ejecutadas durante los ajustes finales:
 ### 20.7 Riesgos pendientes
 
 - La base de datos local/remota debe tener aplicadas las migraciones nuevas antes de probar el flujo completo.
-- Las referencias funcionales de Otrosí 1 a 4 deben probarse desde datos limpios para confirmar liquidaciones contra el archivo de referencia.
+- Las referencias funcionales de Otrosí 1 a 4 deben probarse desde datos limpios.
+  Cuando el Excel difiera de la regla date-only aprobada, debe conservarse la
+  diferencia documentada en 19.4.1 y no forzar el cálculo para igualar el Excel.
 - Si una póliza base emitida conserva snapshots incompletos de RCE/PLO, el sistema bloqueará el avance de cotización de ajuste hasta corregir la base emitida.
 - Algunas rutas y helpers usan nombres internos en inglés por estabilidad técnica (`amendment`), aunque la UI visible debe conservar lenguaje AFISEC de `otrosí`.
+
+## 21. Fuente de verdad y cierre del Sprint
+
+Para mantenimiento, el orden de autoridad es:
+
+1. reglas de negocio aprobadas durante las pruebas;
+2. snapshots emitidos y restricciones de base de datos;
+3. funciones determinísticas y sus pruebas;
+4. documentos contractuales;
+5. Excel como referencia comparativa, no como motor de cálculo.
+
+El Sprint 3 se considera funcionalmente implementado para:
+
+- póliza base emitida como requisito;
+- un solo otrosí no terminal por contrato;
+- secuencias posteriores a Otrosí 4;
+- revisión editable aunque existan alertas críticas;
+- bloqueo de cotización y emisión cuando la base está incompleta;
+- liquidación de solo prórroga, solo adición y adición más prórroga;
+- cotizaciones de ajuste versionadas;
+- una sola versión emitida por otrosí;
+- histórico operativo;
+- reversión exclusiva del último otrosí activo.
+
+Pendientes que no deben confundirse con defectos del Sprint:
+
+- no existe documento de referencia para Otrosí 5;
+- no hay autenticación;
+- no hay integración con aseguradoras;
+- no hay cúmulo, cupos, reportes ni filtros avanzados;
+- no hay pruebas automatizadas de navegador o integración con Supabase.

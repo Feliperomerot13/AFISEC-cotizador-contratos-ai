@@ -1,51 +1,97 @@
-# Arquitectura del Repositorio
+# Arquitectura actual del repositorio AFISEC
 
-Este documento explica cómo está organizado **Muñeco Digital**, qué responsabilidad tiene cada parte del código y cómo fluye la información desde la carga del PDF hasta la validación humana.
+## 1. Alcance
 
-## Visión General
+AFISEC es una aplicación Next.js que concentra:
 
-Muñeco Digital es una aplicación Next.js con App Router. El frontend entrega las pantallas de carga, consulta y validación; el backend vive en Route Handlers dentro de `app/api/*`.
+- carga y extracción de contratos y órdenes;
+- revisión humana y cálculo de amparos;
+- cotizaciones base versionadas;
+- registro y bloqueo de póliza base emitida;
+- renovación manual de pólizas renovables;
+- otrosíes secuenciales con liquidación incremental;
+- cotizaciones de ajuste y registro de otrosí emitido.
 
-La aplicación sigue una regla central: los datos protegidos y las credenciales nunca se exponen al navegador. El cliente solo llama endpoints internos. Los endpoints usan la service role key de Supabase y las claves de Azure en servidor.
+La aplicación no expide pólizas en una aseguradora. Registra la emisión realizada
+externamente y congela el snapshot correspondiente.
 
-## Flujo Principal
+## 2. Principios de diseño vigentes
 
-1. La ejecutiva carga un PDF desde `/upload`.
-2. El navegador envía el formulario a `POST /api/upload`.
-3. El servidor crea o reutiliza el cliente, crea el contrato, sube el PDF a Supabase Storage y registra el documento.
-4. El navegador llama `POST /api/contracts/[id]/process`.
-5. El servidor cambia el contrato a `procesando`.
-6. El servidor descarga el PDF desde Storage.
-7. Azure Document Intelligence extrae texto página por página.
-8. Azure OpenAI recibe el texto y devuelve JSON estructurado.
-9. Zod valida estrictamente la respuesta.
-10. El servidor guarda logs en `extracciones`, actualiza `contratos`, reemplaza `amparos` y deja el contrato en `pendiente_validacion`.
-11. La ejecutiva revisa y corrige desde `/contratos/[id]`.
-12. Al confirmar, `PUT /api/contracts/[id]/validate` guarda los cambios y pasa el contrato a `validado`.
+### 2.1 Servidor como frontera protegida
 
-## Estructura de Carpetas
+Los componentes cliente llaman Route Handlers bajo `/api`. El acceso a Supabase
+con service role, Azure Document Intelligence y Azure OpenAI ocurre únicamente en
+servidor.
+
+### 2.2 IA para extracción, código para cálculo
+
+La IA extrae campos, reglas y evidencia. Los valores asegurados, vigencias,
+primas y liquidaciones se calculan mediante funciones determinísticas.
+
+### 2.3 Revisión humana obligatoria
+
+Un contrato no llega a `validado` sin confirmación humana. Un otrosí se puede
+revisar y recalcular antes de generar su cotización de ajuste.
+
+### 2.4 Versiones basadas en documentos
+
+Validar no crea una versión. Generar un PDF sí crea una versión y guarda un
+snapshot inmutable.
+
+### 2.5 La emisión define el estado vigente
+
+La póliza base emitida es el punto de verdad inicial. Cada otrosí emitido crea el
+estado vigente utilizado por el siguiente otrosí.
+
+## 3. Stack y runtime
+
+- Node.js 22.
+- Next.js 16.2.4 con App Router.
+- versión de aplicación `0.4.0`.
+- React 19.
+- TypeScript.
+- Tailwind CSS 4.
+- Supabase PostgreSQL y Storage.
+- Azure AI Document Intelligence.
+- Azure OpenAI.
+- Zod.
+
+Las rutas API declaran `runtime = "nodejs"`. El proyecto se construye con
+`next build` y se ejecuta con `next start`.
+
+## 4. Estructura principal
 
 ```text
 app/
   api/
+    amendment-quotes/[id]/
+      download/route.ts
+      emit/route.ts
+      revert/route.ts
+    amendments/[id]/
+      close/route.ts
+      quotes/route.ts
+      review/route.ts
     contracts/
       route.ts
       [id]/
-        route.ts
         process/route.ts
+        quotes/route.ts
+        renewal/route.ts
+        route.ts
         status/route.ts
         validate/route.ts
     dashboard/route.ts
+    quotes/[id]/
+      download/route.ts
+      emit/route.ts
+      revert/route.ts
     upload/route.ts
   contratos/
-    page.tsx
-    [id]/page.tsx
-  upload/page.tsx
-  layout.tsx
-  page.tsx
-  globals.css
+  upload/
 
 components/
+  amendments-panel.tsx
   contract-detail-client.tsx
   contracts-list.tsx
   dashboard-client.tsx
@@ -54,233 +100,484 @@ components/
 
 lib/
   ai.ts
+  amendment-context.ts
+  amendment-pdf.ts
+  amendments.ts
   api.ts
   constants.ts
   coverage-calculations.ts
   database.types.ts
+  date-only.ts
   env.ts
   format.ts
+  normalizers.ts
   processing.ts
+  quote-pdf.ts
+  quotes.ts
   schemas.ts
   supabase-admin.ts
 
 docs/
-  ARCHITECTURE.md
+  Sprints/
+  supabase-migrations/
 ```
 
-## Responsabilidades por Capa
+## 5. Capas y responsabilidades
 
-### `app/`
+### 5.1 Páginas y componentes
 
-Contiene páginas y Route Handlers.
+- `dashboard-client.tsx`: métricas de contratos, cotizaciones base, pólizas y
+  otrosíes.
+- `upload-form.tsx`: selecciona primero el tipo de documento. Para otrosí exige
+  cliente y contrato con póliza emitida.
+- `contracts-list.tsx`: búsqueda y listado de contratos.
+- `contract-detail-client.tsx`: revisión del contrato, amparos, cotizaciones,
+  resumen emitido y renovación.
+- `amendments-panel.tsx`: revisión, liquidación, cotización, emisión, reversión
+  e histórico de otrosíes.
+- `status-badge.tsx`: presentación de estados.
 
-- `app/page.tsx`: dashboard inicial.
-- `app/upload/page.tsx`: pantalla de carga de PDF.
-- `app/contratos/page.tsx`: consulta y filtros de contratos.
-- `app/contratos/[id]/page.tsx`: detalle y validación humana.
-- `app/api/*`: backend interno de la aplicación.
+`contract-detail-client.tsx` y `amendments-panel.tsx` son componentes extensos.
+No deben recibir refactors generales dentro de cambios funcionales pequeños.
 
-Las páginas usan componentes cliente cuando necesitan estado, formularios, polling o llamadas `fetch`.
+### 5.2 Integraciones y procesamiento
 
-### `components/`
+- `env.ts`: lee y valida variables de entorno.
+- `supabase-admin.ts`: crea el cliente Supabase con service role.
+- `ai.ts`: Document Intelligence, prompts y Structured Outputs.
+- `processing.ts`: orquesta extracción, fallback, normalización y persistencia
+  de contratos y otrosíes.
+- `schemas.ts`: contratos de entrada para IA y APIs.
+- `normalizers.ts`: normaliza fechas, monedas, números, booleanos y enums.
 
-Contiene la UI interactiva.
+### 5.3 Cálculo y snapshots
 
-- `upload-form.tsx`: formulario de carga y arranque de procesamiento.
-- `contracts-list.tsx`: búsqueda, filtros y tabla de contratos.
-- `contract-detail-client.tsx`: edición, fuentes, confianza, amparos y validación.
-- `dashboard-client.tsx`: indicadores del dashboard.
-- `status-badge.tsx`: badges reutilizables para estados y confianza.
+- `date-only.ts`: operaciones de fecha sin conversión a hora local.
+- `coverage-calculations.ts`: liquidación determinística de amparos base.
+- `quotes.ts`: snapshots, totales, validaciones comerciales y numeración de
+  cotización base.
+- `quote-pdf.ts`: PDF comercial de cotización base.
+- `amendment-context.ts`: carga la póliza base y el último estado vigente.
+- `amendments.ts`: secuencia, liquidación incremental, snapshots y validaciones
+  de otrosí.
+- `amendment-pdf.ts`: PDF comercial de cotización de ajuste.
 
-Estos componentes no importan clientes server-only ni secretos. Solo llaman endpoints internos.
+## 6. Flujo de contrato base
 
-### `lib/`
+1. `POST /api/upload` valida el formulario y el PDF.
+2. Crea o reutiliza un cliente.
+3. Crea el contrato en estado `cargado`.
+4. Sube el PDF al bucket privado `contratos`.
+5. Inserta el registro en `documentos`.
+6. `POST /api/contracts/[id]/process` inicia el procesamiento.
+7. `processing.ts` descarga el PDF.
+8. Document Intelligence extrae texto por página.
+9. Azure OpenAI devuelve una estructura validada por Zod.
+10. El backend aplica normalizadores y fallbacks determinísticos.
+11. `coverage-calculations.ts` calcula los amparos.
+12. Se actualizan `contratos`, `amparos` y `extracciones`.
+13. El contrato queda en `pendiente_validacion`.
+14. La revisión humana se guarda mediante
+    `PUT /api/contracts/[id]/validate`.
+15. El contrato queda en `validado`.
 
-Contiene la lógica compartida y de servidor.
+`contrato_base`, `orden` y `orden_compra` comparten este flujo. El subtipo se
+envía como instrucción contextual al mismo prompt y no crea modelos paralelos.
 
-- `supabase-admin.ts`: crea el cliente Supabase con `SUPABASE_SERVICE_ROLE_KEY`.
-- `env.ts`: valida variables de entorno requeridas en servidor.
-- `ai.ts`: integra Azure Document Intelligence y Azure OpenAI.
-- `processing.ts`: orquesta el pipeline completo de extracción.
-- `schemas.ts`: define validaciones Zod para IA, upload, filtros y validación humana.
-- `database.types.ts`: tipos TypeScript alineados al esquema Supabase.
-- `api.ts`: helpers para respuestas JSON y errores.
-- `constants.ts`: estados, ejecutivas, bucket y versión de prompt.
-- `coverage-calculations.ts`: funciones puras para calcular valores derivados de amparos antes de guardarlos.
-- `format.ts`: helpers de formato para fechas, moneda, porcentajes y texto.
+La cobertura de páginas solo bloquea cuando el contador confiable
+`/Catalog -> /Pages -> /Count` muestra faltantes significativos. El conteo de
+objetos `/Type /Page` se conserva como diagnóstico no bloqueante.
 
-## Route Handlers
+Estados de contrato centralizados:
 
-| Endpoint | Método | Responsabilidad |
-| --- | --- | --- |
-| `/api/dashboard` | `GET` | Devuelve conteos del dashboard. |
-| `/api/upload` | `POST` | Crea/reusa cliente, crea contrato, sube PDF y registra documento. |
-| `/api/contracts` | `GET` | Consulta contratos con filtros. |
-| `/api/contracts/[id]` | `GET` | Devuelve contrato, cliente, documentos, amparos y tasas relevantes. |
-| `/api/contracts/[id]/process` | `POST` | Inicia procesamiento con IA. |
-| `/api/contracts/[id]/status` | `GET` | Devuelve estado para polling. |
-| `/api/contracts/[id]/validate` | `PUT` | Guarda correcciones humanas y valida el contrato. |
+```text
+cargado
+procesando
+procesado_ia
+pendiente_validacion
+validado
+error
+```
 
-Todos los endpoints usan `runtime = "nodejs"` porque necesitan SDKs de Supabase/Azure y procesamiento de archivos.
+## 7. Cálculo de amparos base
 
-## Modelo de Datos
-
-El esquema vive en Supabase y no se crea desde la app. El código espera estas tablas:
-
-- `clientes`: cliente y ejecutiva responsable.
-- `contratos`: datos estructurados del contrato y estado del flujo.
-- `documentos`: metadatos del PDF cargado.
-- `amparos`: garantías detectadas y luego validadas.
-- `extracciones`: trazabilidad de intentos de IA, texto, JSON, tokens, resultado y errores.
-- `tasas_referencia`: tasas vigentes de consulta, solo lectura en el MVP.
-
-Los estados válidos del contrato están centralizados en `lib/constants.ts`.
-
-## Pipeline de IA
-
-La lógica principal está en `lib/processing.ts`.
-
-El pipeline hace:
-
-1. Cambia estado a `procesando`.
-2. Busca el último documento del contrato.
-3. Descarga el PDF desde Supabase Storage.
-4. Llama `extractPdfTextByPage()` en `lib/ai.ts`.
-5. Estima páginas del PDF y compara contra las páginas devueltas por Document Intelligence.
-6. Construye un texto con separadores `--- Página N ---`.
-7. Construye el contexto para OpenAI con `buildContractExtractionContext()`.
-8. Llama Azure OpenAI con la deployment primaria.
-9. Valida el JSON con `aiExtractionSchema`.
-10. Registra la extracción con el texto completo extraído por Document Intelligence.
-11. Si faltan campos críticos o hay demasiados campos con confianza baja, repite con la deployment fallback cuando esté configurada.
-12. Calcula valores derivados de amparos en `coverage-calculations.ts`.
-13. Guarda el mejor resultado en `contratos` y los amparos normalizados.
-14. Cambia estado a `pendiente_validacion`.
-
-Si algo falla, el contrato queda en `error`, se guarda `mensaje_error` y se inserta un registro en `extracciones` con `resultado = "error"`.
-
-## Separación entre IA y Cálculo
-
-El pipeline separa tres responsabilidades:
-
-- Azure Document Intelligence extrae texto página por página desde el PDF.
-- Azure OpenAI extrae reglas, campos explícitos y evidencia textual. Para amparos no debe hacer cálculos finales.
-- El backend calcula valores derivados de amparos con funciones determinísticas.
-
-El JSON completo de la IA se guarda únicamente en `extracciones.json_original`. En `contratos.extraido_ia` se guarda solo un booleano para indicar si el contrato ya tuvo extracción de IA.
-
-Antes de actualizar `contratos` o insertar `amparos`, `lib/processing.ts` pasa la extracción por mappers explícitos y normalizadores centrales en `lib/normalizers.ts`. Esa frontera convierte campos anidados de IA a valores planos, aplica `COP` como moneda por defecto, descarta fechas inválidas, evita `NaN` y registra en desarrollo qué valores fueron corregidos o descartados. Esto protege columnas rígidas de Supabase como booleanos, fechas, numéricos y campos `NOT NULL`.
-
-El contexto enviado a OpenAI no se limita al inicio del contrato. Si el PDF completo cabe bajo el límite de contexto, se envían todas las páginas. Si hay que recortar, se incluyen las primeras tres páginas, páginas con términos críticos y páginas vecinas para no cortar cláusulas; luego se priorizan valor, forma de pago, duración, plazo, garantías, pólizas, amparos, vigencia y acta de recibo final.
-
-Si Document Intelligence devuelve una cobertura sospechosamente baja, por ejemplo dos páginas cuando el PDF parece tener muchas más, el procesamiento se detiene con error claro. Esto evita guardar una extracción parcial como si fuera una lectura válida y ayuda a detectar límites de tier o problemas del PDF.
-
-El fallback no depende solo de confianza baja. También se activa cuando faltan campos críticos del MVP: `valor_contrato`, `plazo`, `fecha_inicio`, `fecha_fin` o garantías/amparos útiles.
-
-La IA puede devolver porcentaje, cuantía fija, tipo de vigencia, base de vigencia, días adicionales y fechas explícitas cuando aparezcan en el contrato. El backend calcula `valor_asegurado`, `fecha_desde` y `fecha_hasta` cuando hay datos suficientes.
-
-El cálculo de amparos marca `requiere_revision` y `motivo_revision` cuando falta información, la confianza es baja, la vigencia depende de acta de recibo final, la fuente es ambigua, el valor calculado es cero o negativo, o la cuantía aplica por empleado/persona/evento. Inferencias débiles sin fuente, página ni regla suficiente no se insertan en `amparos`.
-
-Ningún contrato llega a `validado` sin confirmación humana desde la pantalla de detalle.
-
-## Liquidación de Amparos
-
-`lib/coverage-calculations.ts` concentra la liquidación determinística por amparo. La IA extrae reglas y evidencia; el backend calcula:
-
-- `valor_base_calculo`
-- `modo_calculo`
-- `valor_asegurado`
-- `fecha_desde`
-- `fecha_hasta`
-- `dias_vigencia`
-- `prima_neta`
-- `impuesto`
-- `prima_total`
-
-La fórmula implementada es:
+La fórmula general es:
 
 ```text
 prima_neta = valor_asegurado * tasa * dias_vigencia / 365
-impuesto = prima_neta * iva_porcentaje
-prima_total = prima_neta + impuesto
+iva = prima_neta * iva_porcentaje
+prima_total = prima_neta + iva
 ```
 
-`dias_adicionales` conserva la regla contractual, por ejemplo 30 días o 1095 días. `dias_vigencia` es la diferencia real entre `fecha_desde` y `fecha_hasta`; solo este valor alimenta la prima.
+Reglas relevantes:
 
-La pantalla de validación trata la información general del contrato como fuente de verdad para liquidar amparos. `contratos.base_calculo_amparos` guarda la base confirmada por la comercial y `contratos.base_calculo_incluye_iva` indica si esa base incluye IVA; si está en `null`, queda como no determinado. Al corregir base, fecha inicio o fecha fin en la sección general, los amparos se recalculan con esos datos salvo fechas manuales explícitas.
+- `base_calculo_amparos` es la base confirmada por la revisión humana.
+- Las fechas se manejan como `YYYY-MM-DD` mediante helpers date-only.
+- Vigencia contractual cubre el plazo completo más el periodo adicional.
+- Vigencia postcontractual inicia desde su fecha base final.
+- Overrides manuales solo se aplican cuando el usuario los activa.
+- El buen manejo de anticipo utiliza la base de anticipo.
+- RCE/PLO es una línea principal calculable.
+- Los subamparos RCE son informativos y no generan prima individual.
+- La prima neta puede fijarse manualmente por amparo.
 
-En la UI de cada amparo se muestran `fecha_desde`, fecha fin del contrato/base, `dias_adicionales`, `fecha_hasta` calculada y `dias_vigencia`. El usuario cambia `dias_adicionales` y el sistema suma automáticamente esos días sobre la base correcta. Para amparos postcontractuales que dependen de acta de recibo final o cierre, si no existe esa fecha, se usa `fecha_fin` del contrato como estimación de cotización y se conserva `requiere_revision`.
+Cuando `usar_prima_neta_manual = true`, el cálculo conserva
+`prima_neta_automatica` como referencia y usa `prima_neta_manual` para obtener
+IVA y prima total. El snapshot y el PDF consumen únicamente los valores finales.
 
-La UI no muestra la tabla de `tasas_referencia`. Esa tabla queda como fuente interna para prediligenciar la tasa editable del amparo. Si la comercial cambia la tasa en pantalla, `tasa_manual` queda marcada en la fila validada.
+La validación recalcula en servidor antes de reemplazar los amparos. Si hay una
+cotización base en estado `emitida`, el endpoint rechaza la edición directa.
 
-Responsabilidad Civil Extracontractual se modela como un solo amparo principal. La prima se calcula únicamente sobre la línea calculable PLO y la cuantía principal de la póliza. Los demás elementos exigidos por el contrato, como contratistas/subcontratistas, RC patronal, RC cruzada y vehículos propios/no propios, se guardan en `amparos.subamparos` como coberturas informativas. Cuando un sublímite proviene de la plantilla AFISEC y no del texto contractual, queda con `origen = regla_plantilla_afisec` y `requiere_revision = true`.
+## 8. Cotización y emisión de póliza base
 
-Los subamparos de Responsabilidad Civil son configurables en la pantalla de validación. La comercial puede incluirlos o excluirlos y editar porcentaje o valor de sublímite. `calculable = true` queda reservado para PLO; los demás subamparos son informativos y no generan prima individual. Si el contrato define una regla como 30% del PLO, el backend calcula el sublímite y marca `origen = contrato`.
+### 8.1 Generación
 
-El amparo `buen_manejo_anticipo` se calcula sobre el anticipo, no sobre el valor total del contrato. Si el documento indica porcentaje de anticipo y base sin IVA, el backend usa el valor sin IVA cuando está disponible o deriva base sin IVA desde valor total / 1.19. Si falta confirmar la base de IVA o falta valor/porcentaje del anticipo, el amparo queda en revisión humana.
+`POST /api/contracts/[id]/quotes`:
 
-Para otrosíes y prórrogas, se propone la tabla `modificaciones_contractuales` y la relación opcional `amparos.modificacion_id`. Las migraciones propuestas están en `docs/supabase-migrations/20260504_amparos_liquidacion_modificaciones.sql` y `docs/supabase-migrations/20260511_contratos_base_calculo_amparos.sql`; no automatizan todavía la gestión de otrosíes en UI.
+1. exige contrato `validado`;
+2. impide generar una nueva cotización si existe emisión activa;
+3. crea el siguiente número de versión;
+4. construye un snapshot de contrato, cliente y amparos;
+5. bloquea filas comerciales incompletas;
+6. genera el PDF en memoria;
+7. sube el PDF a Supabase Storage;
+8. inserta la versión en `cotizaciones`.
 
-La carga de documentos tipo `otrosi` ya no crea un contrato aislado: el usuario selecciona cliente y contrato base, el PDF se registra en `documentos` contra ese contrato y el procesamiento inserta una fila en `modificaciones_contractuales`. Si el otrosí trae nuevos amparos o ajustes, se insertan con `amparos.modificacion_id` para mantener trazabilidad. La vista histórica consolidada tipo Excel queda como trabajo posterior.
+El PDF no muestra tasa, fuentes, confianza, JSON ni motivos internos.
 
-## Validación del JSON de IA
+### 8.2 Estados
 
-El archivo `lib/schemas.ts` define `aiExtractionSchema`. El modelo debe devolver exactamente la estructura esperada.
+```text
+generada
+emitida
+emision_revertida
+anulada
+```
 
-La app usa Structured Outputs mediante `zodResponseFormat()`, y además parsea y valida la respuesta con Zod. Si el JSON es inválido, se reintenta una vez. Si vuelve a fallar, el contrato queda en error.
+El índice parcial de base de datos impide más de una cotización `emitida` por
+contrato.
 
-La IA no debe inferir datos. Cuando no encuentra un campo, debe devolver `null` y agregar alertas si aplica.
+### 8.3 Emisión
 
-Los campos numéricos no encontrados deben ser `null`, nunca `0`. El cero solo se acepta si aparece explícitamente en el contrato, y aun así el backend marca revisión cuando un valor derivado queda en cero o negativo.
+`POST /api/quotes/[id]/emit` marca una versión generada como emitida. La acción:
 
-## Seguridad
+- conserva el snapshot original;
+- registra fecha de emisión;
+- bloquea validación y edición directa;
+- habilita el flujo de otrosí.
 
-Reglas aplicadas en el repositorio:
+`POST /api/quotes/[id]/revert` conserva trazabilidad y permite volver al flujo
+editable.
 
-- No hay claves de Azure en componentes cliente.
-- No hay `SUPABASE_SERVICE_ROLE_KEY` en componentes cliente.
-- Los writes a base de datos pasan por Route Handlers.
-- Los componentes cliente consumen `/api/*`.
-- La app no devuelve `storage_path` en el detalle del contrato.
-- La app no genera signed URLs del PDF.
-- RLS debe estar activo en Supabase y sin políticas públicas.
+## 9. Renovación
 
-Sin autenticación en este MVP, cualquier persona con acceso al despliegue podría usar la herramienta. Para producción real, el siguiente paso natural es agregar autenticación y autorización antes de exponerlo fuera de un entorno controlado.
+`POST /api/contracts/[id]/renewal` solo opera cuando:
 
-## Procesamiento en Vercel
+- `renovable_automaticamente = true`;
+- existe una póliza base emitida;
+- el snapshot emitido es legible;
+- las fechas suministradas son válidas.
 
-`POST /api/contracts/[id]/process` usa `waitUntil()` cuando detecta `process.env.VERCEL === "1"`. Así puede responder rápido al navegador y dejar que el procesamiento continúe.
+La renovación no usa IA ni crea un otrosí. Recalcula las vigencias desde el
+snapshot emitido y crea una nueva versión de cotización base.
 
-En desarrollo local, el endpoint procesa de forma síncrona para evitar un “fire-and-forget” frágil que se muera silenciosamente.
+## 10. Flujo de otrosí
 
-Para contratos largos o cargas concurrentes, conviene mover este pipeline a una cola durable, por ejemplo:
+### 10.1 Reglas de entrada
 
-- Supabase Queue o tabla de jobs.
-- Inngest, Trigger.dev o Temporal.
-- Azure Functions o worker dedicado.
+`POST /api/upload` permite `tipoDocumento = "otrosi"` únicamente cuando:
 
-## Versionamiento de Prompt
+- se seleccionó un contrato;
+- el contrato tiene una póliza base `emitida`;
+- no existe otro otrosí en estado no terminal.
 
-`PROMPT_VERSION` vive en `lib/constants.ts`.
+El documento se asocia al contrato base y se crea una fila en
+`modificaciones_contractuales` con secuencia incremental.
 
-Cada extracción guarda `version_prompt` en `extracciones` y `contratos`, lo que permite comparar resultados si se mejora el prompt en versiones futuras.
+### 10.2 Procesamiento
 
-## Extensión del MVP
+`POST /api/contracts/[id]/process` despacha el documento al flujo de contrato o
+al flujo de otrosí. Para otrosí:
 
-Para agregar nuevas capacidades sin romper el alcance actual:
+- la IA extrae el delta;
+- el estado vigente anterior tiene prioridad sobre valores históricos
+  contradictorios;
+- fechas, valores periódicos y clasificación reciben fallbacks determinísticos;
+- impuesto de timbre se conserva como alerta informativa.
 
-- Nuevos campos de extracción: actualizar `aiExtractionSchema`, prompt, mapping en `processing.ts` y UI de validación.
-- Nuevos filtros: agregar parámetro en `contractListQuerySchema`, aplicar filtro en `/api/contracts` y añadir control en `contracts-list.tsx`.
-- Nuevos estados: actualizar `CONTRACT_STATES`, badges, queries y documentación.
-- Nuevos documentos por contrato: mantener `documentos` como fuente de metadatos y decidir si se procesa el último documento o uno específico.
-- Autenticación: proteger Route Handlers y reemplazar el selector manual de ejecutiva por usuario autenticado.
+### 10.3 Revisión
 
-## Comandos Útiles
+`PUT /api/amendments/[id]/review`:
+
+- guarda valores revisados;
+- recalcula liquidación;
+- actualiza snapshots previo y resultante propuesto;
+- permite guardar aunque la póliza base tenga una alerta crítica.
+
+Las alertas críticas de la base bloquean cotización y emisión, no la revisión.
+
+### 10.4 Liquidación incremental
+
+La liquidación separa:
+
+- prima por valor adicionado;
+- prima por prórroga;
+- prima neta del ajuste;
+- IVA;
+- prima total.
+
+Los días de prórroga se derivan de las fechas revisadas. Los días de adición se
+calculan con la vigencia propia de cada amparo. RCE/PLO no genera prima por
+adición cuando su cuantía fija no cambia.
+
+### 10.5 Cotización de ajuste
+
+`POST /api/amendments/[id]/quotes`:
+
+1. exige revisión validada;
+2. verifica integridad de la póliza base y RCE/PLO;
+3. recalcula la liquidación;
+4. crea una versión por otrosí;
+5. guarda snapshot y PDF en Storage;
+6. actualiza el otrosí a `cotizado`.
+
+El PDF separa:
+
+- total garantías/cumplimiento;
+- total responsabilidad civil;
+- total general.
+
+### 10.6 Emisión y reversión
+
+`POST /api/amendment-quotes/[id]/emit`:
+
+- impide emitir una versión si ya existe otra emitida para el mismo otrosí;
+- verifica secuencia anterior;
+- congela el snapshot resultante;
+- actualiza la cotización y `modificaciones_contractuales`.
+
+`POST /api/amendment-quotes/[id]/revert` solo permite reversar el último otrosí
+emitido activo.
+
+Los estados internos conservan nombres históricos:
+
+```text
+cargado
+procesando
+pendiente_revision
+validado
+cotizado
+endoso_emitido
+no_aplicable
+anulado
+error
+pendiente_aplicacion
+aplicada
+```
+
+La UI traduce `endoso_emitido` como `Otrosí emitido`. Los términos internos no
+deben aparecer en documentos comerciales.
+
+## 11. Route Handlers
+
+| Ruta | Método | Responsabilidad |
+| --- | --- | --- |
+| `/api/dashboard` | GET | Métricas de contratos, cotizaciones y otrosíes. |
+| `/api/upload` | POST | Carga contrato, orden u otrosí. |
+| `/api/contracts` | GET | Lista y busca contratos. |
+| `/api/contracts/[id]` | GET | Detalle consolidado del contrato. |
+| `/api/contracts/[id]` | DELETE | Elimina contrato y dependencias cuando nunca hubo emisión. |
+| `/api/contracts/[id]/process` | POST | Procesa contrato u otrosí con IA. |
+| `/api/contracts/[id]/status` | GET | Estado para polling. |
+| `/api/contracts/[id]/validate` | PUT | Guarda revisión del contrato base. |
+| `/api/contracts/[id]/quotes` | POST | Genera cotización base. |
+| `/api/contracts/[id]/renewal` | POST | Genera cotización de renovación. |
+| `/api/quotes/[id]/download` | GET | Descarga PDF base. |
+| `/api/quotes/[id]/emit` | POST | Registra emisión de póliza base. |
+| `/api/quotes/[id]/revert` | POST | Revierte emisión base. |
+| `/api/amendments/[id]/review` | PUT | Guarda y recalcula revisión de otrosí. |
+| `/api/amendments/[id]/quotes` | POST | Genera cotización de ajuste. |
+| `/api/amendments/[id]/close` | POST | Cierra un otrosí no emitido. |
+| `/api/amendment-quotes/[id]/download` | GET | Descarga PDF de ajuste. |
+| `/api/amendment-quotes/[id]/emit` | POST | Registra otrosí emitido. |
+| `/api/amendment-quotes/[id]/revert` | POST | Revierte el último otrosí emitido. |
+
+## 12. Modelo de datos
+
+### Tablas base
+
+- `clientes`: cliente y ejecutiva.
+- `contratos`: datos revisados, estado y configuración de renovación.
+- `documentos`: metadatos y ruta privada del PDF.
+- `amparos`: liquidación base y subamparos.
+- `extracciones`: trazabilidad de IA, texto, JSON, alertas y errores.
+- `tasas_referencia`: tasas internas de consulta.
+
+### Sprint 2
+
+- `cotizaciones`: versiones, estado, snapshot, totales y referencia al PDF.
+
+Restricciones:
+
+- `unique (contrato_id, version)`;
+- una sola fila `emitida` por contrato mediante índice parcial.
+
+### Sprint 3
+
+- `modificaciones_contractuales`: delta, secuencia, revisión, liquidación y
+  snapshots vigente anterior/resultante.
+- `cotizaciones_ajuste`: versiones de PDF y emisión por otrosí.
+
+Restricciones:
+
+- `unique (modificacion_id, version)`;
+- un solo otrosí no terminal por contrato mediante índice parcial;
+- una sola cotización de ajuste emitida por otrosí mediante índice parcial.
+
+Los IDs y claves foráneas del dominio usan `bigint/int8`.
+
+### Sprint 4
+
+`amparos` agrega:
+
+- `usar_prima_neta_manual`;
+- `prima_neta_manual`;
+- `prima_neta_automatica`.
+
+La función `eliminar_contrato_no_emitido(bigint)` elimina dependencias dentro de
+una transacción y rechaza cualquier póliza u otrosí con historia emitida.
+
+## 13. Trazabilidad de registros
+
+La aplicación conserva tres niveles de evidencia:
+
+1. **Documento original:** `documentos` más el archivo privado en Storage.
+2. **Extracción y revisión:** `extracciones`, datos revisados y liquidaciones.
+3. **Documento comercial emitible:** `cotizaciones` o
+   `cotizaciones_ajuste` con snapshot y PDF.
+
+Mapa de escritura:
+
+| Acción | Escrituras verificables |
+| --- | --- |
+| Carga base | cliente, contrato, documento y archivo PDF. |
+| Procesamiento base | log de extracción, contrato y amparos. |
+| Validación base | contrato validado y reemplazo de amparos base. |
+| Cotización base | PDF y versión nueva en `cotizaciones`. |
+| Emisión base | estado y fechas de la versión seleccionada. |
+| Carga de otrosí | documento y modificación con secuencia. |
+| Revisión de otrosí | campos revisados, liquidación y snapshots propuestos. |
+| Cotización de ajuste | PDF y versión nueva en `cotizaciones_ajuste`. |
+| Emisión de otrosí | snapshot emitido y estado vigente resultante. |
+| Reversión | estado y motivo; no elimina la versión ni el PDF. |
+| Eliminación de prueba | función transaccional de DB y limpieza posterior de Storage. |
+
+`extracciones.json_original` conserva la salida estructurada de IA. Los PDFs
+comerciales no incluyen JSON, prompts, confianza ni fuentes internas.
+
+## 14. Storage y PDF
+
+El bucket privado es `contratos`.
+
+Los PDFs se generan en memoria y utilizan el logo local:
+
+```text
+public/brand/Logo_Color_Afisec_cuadrado.png
+```
+
+No se usan logos externos. Los PDFs se almacenan en Supabase Storage y se
+descargan mediante endpoints del servidor.
+
+No existe escritura persistente de documentos en disco local.
+
+## 15. Seguridad
+
+Controles presentes:
+
+- secretos sin prefijo `NEXT_PUBLIC`;
+- service role utilizada solo en servidor;
+- rutas de Storage no incluidas en la respuesta general del contrato;
+- RLS habilitado en migraciones nuevas;
+- writes concentrados en Route Handlers.
+
+Riesgo pendiente:
+
+- no existe autenticación ni autorización;
+- quien tenga acceso HTTP a la aplicación puede invocar los endpoints;
+- hasta incorporar control de acceso, el despliegue debe restringirse a un
+  entorno interno.
+
+## 16. Consistencia e integridad
+
+Las restricciones únicas de PostgreSQL protegen las emisiones activas y el
+versionamiento. Sin embargo, algunas operaciones abarcan Storage y varias
+actualizaciones de base de datos:
+
+- subir PDF e insertar cotización;
+- emitir cotización de ajuste y actualizar el otrosí;
+- cerrar cotización y modificación.
+
+No existe una transacción distribuida entre Supabase Storage y PostgreSQL. Un
+fallo intermedio puede dejar un PDF huérfano o requerir corrección operativa.
+
+Para eliminar contratos de prueba, PostgreSQL se confirma primero y Storage se
+limpia después. Un fallo de Storage puede dejar un archivo huérfano, pero no una
+base con referencias a un archivo ya eliminado.
+
+## 17. Procesamiento y despliegue
+
+En Vercel, el procesamiento puede usar `waitUntil()` cuando
+`process.env.VERCEL === "1"`. En otros entornos, incluido Azure App Service, el
+Route Handler espera el procesamiento de forma síncrona.
+
+El despliegue actual recomendado usa Azure App Service Linux con Node 22:
 
 ```bash
-npm run dev
-npm run lint
+npm ci
 npm run build
+npm run start
 ```
 
-Durante desarrollo, si cambias tipos de rutas de Next.js, corre `npm run build`; suele detectar errores que el lint no ve.
+Para mayor carga o documentos extensos, el procesamiento debería migrarse a un
+worker o cola durable sin cambiar las reglas de negocio.
+
+El dashboard obtiene la versión desde `package.json` y muestra la etiqueta de
+release. `APP_BUILD_TIME` y `APP_COMMIT_SHA` son metadata opcional no sensible.
+
+## 18. Pruebas
+
+`scripts/validate-normalizers.mjs` cubre mediante aserciones:
+
+- normalización de números, moneda, fechas y booleanos;
+- valor mensual multiplicado por periodos;
+- Acta de Inicio con fecha provisional;
+- vigencias contractuales y postcontractuales;
+- RCE/PLO;
+- anticipo;
+- extracción determinística de otrosí;
+- liquidación incremental;
+- días de adición por vigencia propia del amparo;
+- separación de totales de garantías y responsabilidad civil.
+- conteo confiable y aproximado de páginas;
+- prima neta manual y retorno al cálculo automático;
+- confirmación fuerte para eliminación.
+
+Pendiente:
+
+- pruebas de Route Handlers;
+- pruebas contra Supabase;
+- pruebas de navegador;
+- pruebas de concurrencia y fallos parciales.
+
+## 19. Documentación de Sprints
+
+- Sprint 1 conserva la auditoría previa a cotización y emisión.
+- Sprint 2 conserva la especificación de cotización, snapshots y póliza base.
+- Sprint 3 conserva referencias funcionales, decisiones e implementación de
+  otrosíes.
+- Sprint 4 documenta estabilización, prima manual, eliminación y versión
+  desplegada.
+
+Los estados históricos deben leerse junto con las secciones de cierre de cada
+Sprint. El código, las migraciones y las pruebas representan la fuente técnica
+vigente.

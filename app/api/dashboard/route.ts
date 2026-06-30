@@ -1,5 +1,7 @@
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
+import { APP_RELEASE_LABEL } from "@/lib/constants";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import packageMetadata from "@/package.json";
 
 export const runtime = "nodejs";
 
@@ -67,8 +69,30 @@ export async function GET() {
       basePoliciesIssued: issuedBasePolicies.count ?? 0,
       amendmentsInReview: amendmentsInReview.count ?? 0,
       issuedAmendments: issuedAmendments.count ?? 0,
+      version: {
+        appVersion: packageMetadata.version,
+        release: APP_RELEASE_LABEL,
+        buildTime: normalizeBuildTime(process.env.APP_BUILD_TIME),
+        commit: normalizeCommit(process.env.APP_COMMIT_SHA),
+      },
     });
   } catch (error) {
     return jsonError(getErrorMessage(error));
   }
+}
+
+function normalizeBuildTime(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
+}
+
+function normalizeCommit(value: string | undefined) {
+  const normalized = value?.trim().replace(/[^a-fA-F0-9]/g, "") ?? "";
+
+  return normalized ? normalized.slice(0, 7).toLowerCase() : null;
 }

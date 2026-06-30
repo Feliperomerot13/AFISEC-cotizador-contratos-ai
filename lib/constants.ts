@@ -18,7 +18,9 @@ export const CONTRACT_STATES = [
   "error",
 ] as const;
 
-export const PROMPT_VERSION = "muneco-digital-v1";
+export const PROMPT_VERSION = "afisec-sprint4-v1";
+
+export const APP_RELEASE_LABEL = "Sprint 4 · Estabilización";
 
 export const STORAGE_BUCKET = "contratos";
 

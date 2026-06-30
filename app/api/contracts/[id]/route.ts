@@ -1,5 +1,6 @@
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
 import { normalizeText } from "@/lib/format";
+import { deleteContractSchema } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
@@ -147,4 +148,81 @@ export async function GET(_request: Request, { params }: IdContext) {
   } catch (error) {
     return jsonError(getErrorMessage(error));
   }
+}
+
+export async function DELETE(request: Request, { params }: IdContext) {
+  try {
+    const { id } = await params;
+    deleteContractSchema.parse(await request.json());
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase.rpc(
+      "eliminar_contrato_no_emitido",
+      {
+        p_contrato_id: id,
+      },
+    );
+
+    if (error) {
+      const status = /emitid|trazabilidad|estado vigente/i.test(error.message)
+        ? 409
+        : 400;
+
+      return jsonError(error.message, status);
+    }
+
+    const storageObjects = parseStorageObjects(data);
+    const storageWarnings: string[] = [];
+    const pathsByBucket = new Map<string, string[]>();
+
+    storageObjects.forEach(({ bucket, path }) => {
+      pathsByBucket.set(bucket, [...(pathsByBucket.get(bucket) ?? []), path]);
+    });
+
+    for (const [bucket, paths] of pathsByBucket) {
+      const { error: storageError } = await supabase.storage
+        .from(bucket)
+        .remove(paths);
+
+      if (storageError) {
+        storageWarnings.push(
+          `No se pudieron limpiar ${paths.length} archivo(s) del bucket ${bucket}: ${storageError.message}`,
+        );
+      }
+    }
+
+    return jsonOk({
+      deleted: true,
+      contractId: id,
+      storageWarnings,
+    });
+  } catch (error) {
+    return jsonError(getErrorMessage(error), 400);
+  }
+}
+
+function parseStorageObjects(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  const storageObjects = (value as Record<string, unknown>).storage_objects;
+
+  if (!Array.isArray(storageObjects)) {
+    return [];
+  }
+
+  return storageObjects.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+
+    return typeof record.bucket === "string" &&
+      typeof record.path === "string" &&
+      record.bucket &&
+      record.path
+      ? [{ bucket: record.bucket, path: record.path }]
+      : [];
+  });
 }

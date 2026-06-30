@@ -11,6 +11,12 @@ type DashboardStats = {
   basePoliciesIssued: number;
   amendmentsInReview: number;
   issuedAmendments: number;
+  version: {
+    appVersion: string;
+    release: string;
+    buildTime: string | null;
+    commit: string | null;
+  };
 };
 
 const statStyles = [
@@ -137,6 +143,29 @@ export function DashboardClient() {
           </div>
         ))}
       </section>
+
+      {stats?.version ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-neutral-200 pt-4 text-xs text-neutral-500">
+          <span className="font-semibold text-neutral-700">
+            v{stats.version.appVersion}
+          </span>
+          <span>{stats.version.release}</span>
+          {stats.version.buildTime ? (
+            <span>Build {formatBuildTime(stats.version.buildTime)}</span>
+          ) : null}
+          {stats.version.commit ? (
+            <span className="font-mono">Commit {stats.version.commit}</span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function formatBuildTime(value: string) {
+  return new Intl.DateTimeFormat("es-CO", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "America/Bogota",
+  }).format(new Date(value));
 }

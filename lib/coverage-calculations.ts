@@ -35,6 +35,8 @@ export type CoverageCalculationInput = Partial<AIExtraction["garantias"][number]
   tipo_amparo: string;
   tasa?: number | null;
   tasa_manual?: boolean | null;
+  usar_prima_neta_manual?: boolean | null;
+  prima_neta_manual?: number | null;
   iva_porcentaje?: number | null;
   valor_base_calculo?: number | null;
   valor_asegurado?: number | null;
@@ -69,6 +71,9 @@ export type NormalizedCoverage = {
   dias_vigencia: number | null;
   iva_porcentaje: number;
   prima_neta: number | null;
+  prima_neta_automatica: number | null;
+  prima_neta_manual: number | null;
+  usar_prima_neta_manual: boolean;
   impuesto: number | null;
   prima_total: number | null;
   tasa_manual: boolean;
@@ -145,12 +150,31 @@ export function normalizeCoverage(
         : valueCalculation.valor_asegurado !== null
           ? DEFAULT_COVERAGE_RATE
           : null);
-  const premium = calculatePremium({
+  const automaticPremium = calculatePremium({
     insuredValue: valueCalculation.valor_asegurado,
     rate: tasa,
     validityDays,
     ivaPercentage,
   });
+  const useManualNetPremium = Boolean(
+    preparedCoverage.usar_prima_neta_manual,
+  );
+  const manualNetPremium = normalizeNumber(
+    preparedCoverage.prima_neta_manual,
+  );
+  const premium =
+    useManualNetPremium
+      ? manualNetPremium !== null
+        ? calculatePremiumFromNet({
+            netPremium: manualNetPremium,
+            ivaPercentage,
+          })
+        : {
+            prima_neta: null,
+            impuesto: null,
+            prima_total: null,
+          }
+      : automaticPremium;
 
   if (preparedCoverage.confianza === "baja") {
     reasons.add("Confianza baja en la extracción.");
@@ -194,7 +218,11 @@ export function normalizeCoverage(
     reasons.add("El valor asegurado calculado es cero o negativo.");
   }
 
-  if (tasa === null) {
+  if (useManualNetPremium && manualNetPremium === null) {
+    reasons.add("Falta prima neta manual para aplicar el override.");
+  }
+
+  if (tasa === null && !useManualNetPremium) {
     reasons.add("Falta tasa para calcular prima.");
   }
 
@@ -218,6 +246,9 @@ export function normalizeCoverage(
     dias_vigencia: validityDays,
     iva_porcentaje: ivaPercentage,
     prima_neta: premium.prima_neta,
+    prima_neta_automatica: automaticPremium.prima_neta,
+    prima_neta_manual: manualNetPremium,
+    usar_prima_neta_manual: useManualNetPremium,
     impuesto: premium.impuesto,
     prima_total: premium.prima_total,
     tasa_manual: Boolean(preparedCoverage.tasa_manual),
@@ -1045,6 +1076,23 @@ function calculatePremium({
     prima_neta: netPremium,
     impuesto: tax,
     prima_total: roundMoney(netPremium + tax),
+  };
+}
+
+function calculatePremiumFromNet({
+  netPremium,
+  ivaPercentage,
+}: {
+  netPremium: number;
+  ivaPercentage: number;
+}) {
+  const normalizedNetPremium = roundMoney(netPremium);
+  const tax = roundMoney(normalizedNetPremium * ivaPercentage);
+
+  return {
+    prima_neta: normalizedNetPremium,
+    impuesto: tax,
+    prima_total: roundMoney(normalizedNetPremium + tax),
   };
 }
 
