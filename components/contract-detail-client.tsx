@@ -9,6 +9,7 @@ import {
   useEffect,
   useState,
 } from "react";
+import { Loader2 } from "lucide-react";
 import {
   DEFAULT_EXECUTIVE,
   DEFAULT_COVERAGE_RATE,
@@ -54,6 +55,8 @@ import {
 import type { QuoteSnapshot, QuoteSnapshotSubcoverage } from "@/lib/quotes";
 import type { AIExtraction } from "@/lib/schemas";
 import { AmendmentsPanel } from "@/components/amendments-panel";
+import { AiLoader } from "@/components/ai-loader";
+import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
 import { ConfidenceBadge, StatusBadge } from "@/components/status-badge";
 
 type DocumentMetadata = Omit<Documento, "storage_path">;
@@ -486,7 +489,8 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500 shadow-sm">
+      <div className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-neutral-500 shadow-[var(--shadow-soft)]">
+        <Loader2 className="h-4 w-4 animate-ai-spin text-[#d25b30]" aria-hidden />
         Cargando contrato...
       </div>
     );
@@ -531,12 +535,12 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
             Revisión
           </p>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-950 sm:text-3xl">
             {detail.client.nombre}
-          </h1>
+          </h2>
           <p className="mt-2 text-sm text-neutral-500">
             NIT {detail.client.nit} · {detail.client.ejecutivo}
           </p>
@@ -563,9 +567,10 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
       </div>
 
       {detail.contract.estado === "procesando" || detail.contract.estado === "cargado" ? (
-        <div className="rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm font-medium text-sky-700">
-          La extracción está en curso. Esta página se actualiza cada 3 segundos.
-        </div>
+        <AiLoader
+          title="Extracción con inteligencia artificial en curso"
+          description="Analizando el documento, identificando datos del contrato y amparos. Esta página se actualiza automáticamente cada 3 segundos."
+        />
       ) : null}
 
       {detail.contract.estado === "error" ? (
@@ -1582,12 +1587,11 @@ function QuotesHistoryTable({
                 </td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
-                    <a
-                      href={`/api/quotes/${quote.id}/download`}
-                      className="inline-flex h-9 items-center rounded-lg border border-neutral-300 bg-white px-3 text-xs font-semibold text-neutral-800 transition hover:bg-neutral-100"
-                    >
-                      PDF
-                    </a>
+                    <PdfPreviewDialog
+                      url={`/api/quotes/${quote.id}/download`}
+                      fileName={`cotizacion-afisec-v${quote.version}.pdf`}
+                      label="PDF"
+                    />
                     {quote.estado === "generada" ? (
                       <button
                         type="button"

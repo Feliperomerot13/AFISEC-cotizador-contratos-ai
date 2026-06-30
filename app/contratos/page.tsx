@@ -1,5 +1,10 @@
+import { Suspense } from "react";
 import { ContractsList } from "@/components/contracts-list";
 
 export default function ContractsPage() {
-  return <ContractsList />;
+  return (
+    <Suspense fallback={null}>
+      <ContractsList />
+    </Suspense>
+  );
 }

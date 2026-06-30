@@ -2,6 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { AiLoader } from "@/components/ai-loader";
 import { DEFAULT_EXECUTIVE, DOCUMENT_TYPES, EXECUTIVES } from "@/lib/constants";
 
 const documentTypeLabels: Record<string, string> = {
@@ -181,17 +183,17 @@ export function UploadForm() {
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-8">
-        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
           Carga
         </p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-950 sm:text-3xl">
           {isAmendment ? "Cargar otrosí" : "Nuevo documento"}
-        </h1>
+        </h2>
       </div>
 
       <form
         onSubmit={onSubmit}
-        className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
+        className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-soft)]"
       >
         <div className="grid gap-5 md:grid-cols-2">
           <label className="space-y-2 md:col-span-2">
@@ -366,8 +368,11 @@ export function UploadForm() {
         </label>
 
         {status ? (
-          <div className="mt-5 rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm font-medium text-sky-700">
-            {status}
+          <div className="mt-5">
+            <AiLoader
+              title={status}
+              description="No cierres esta ventana. Estamos leyendo el documento y preparando la extracción asistida con inteligencia artificial."
+            />
           </div>
         ) : null}
 
@@ -381,9 +386,16 @@ export function UploadForm() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="inline-flex h-11 items-center justify-center rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-[var(--shadow-soft)] transition hover:bg-[#b94d28] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#d25b30]/25 disabled:cursor-not-allowed disabled:bg-neutral-400"
           >
-            {isSubmitting ? "Procesando..." : "Cargar y procesar"}
+            {isSubmitting ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-ai-spin" aria-hidden />
+                Procesando...
+              </>
+            ) : (
+              "Cargar y procesar"
+            )}
           </button>
         </div>
       </form>

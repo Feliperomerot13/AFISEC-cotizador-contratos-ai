@@ -21,6 +21,7 @@ import type {
 } from "@/lib/database.types";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { getQuoteSnapshot } from "@/lib/quotes";
+import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
 
 type AmendmentPanelProps = {
   baseQuote: Cotizacion | null;
@@ -658,12 +659,15 @@ function EndorsementHistoryTable({
               <td className="px-3 py-3 text-right">-</td>
               <td className="px-3 py-3">Emitida</td>
               <td className="px-3 py-3 text-right">
-                <a
-                  href={`/api/quotes/${baseQuote.id}/download`}
-                  className="font-semibold text-[#d25b30]"
-                >
-                  PDF
-                </a>
+                <div className="flex justify-end">
+                  <PdfPreviewDialog
+                    url={`/api/quotes/${baseQuote.id}/download`}
+                    fileName="cotizacion-base-afisec.pdf"
+                    title="Vista previa de la póliza base"
+                    label="PDF"
+                    variant="link"
+                  />
+                </div>
               </td>
             </tr>
           ) : null}
@@ -702,12 +706,15 @@ function EndorsementHistoryTable({
                 </td>
                 <td className="px-3 py-3 text-right">
                   {quote ? (
-                    <a
-                      href={`/api/amendment-quotes/${quote.id}/download`}
-                      className="font-semibold text-[#d25b30]"
-                    >
-                      PDF
-                    </a>
+                    <div className="flex justify-end">
+                      <PdfPreviewDialog
+                        url={`/api/amendment-quotes/${quote.id}/download`}
+                        fileName="cotizacion-ajuste-afisec.pdf"
+                        title="Vista previa de la cotización de ajuste"
+                        label="PDF"
+                        variant="link"
+                      />
+                    </div>
                   ) : (
                     "Sin PDF"
                   )}
@@ -901,12 +908,12 @@ function AdjustmentQuotesTable({
                 </td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
-                    <a
-                      href={`/api/amendment-quotes/${quote.id}/download`}
-                      className="inline-flex h-9 items-center rounded-lg border border-neutral-300 bg-white px-3 text-xs font-semibold text-neutral-800 transition hover:bg-neutral-100"
-                    >
-                      PDF
-                    </a>
+                    <PdfPreviewDialog
+                      url={`/api/amendment-quotes/${quote.id}/download`}
+                      fileName={`cotizacion-ajuste-afisec-v${quote.version}.pdf`}
+                      title="Vista previa de la cotización de ajuste"
+                      label="PDF"
+                    />
                     {quote.estado === "generada" ? (
                       <button
                         type="button"

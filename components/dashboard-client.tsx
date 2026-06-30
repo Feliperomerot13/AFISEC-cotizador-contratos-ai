@@ -1,8 +1,18 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import {
+  ArrowUpRight,
+  CheckCircle2,
+  FileSpreadsheet,
+  FileStack,
+  FileText,
+  PencilLine,
+  Plus,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 
 type DashboardStats = {
   total: number;
@@ -19,14 +29,22 @@ type DashboardStats = {
   };
 };
 
-const statStyles = [
-  "border-neutral-200 bg-white",
-  "border-[#d25b30]/30 bg-[#d25b30]/5",
-  "border-rose-200 bg-rose-50",
-  "border-neutral-200 bg-neutral-50",
-  "border-amber-200 bg-amber-50",
-  "border-emerald-200 bg-emerald-50",
-];
+type Accent = "brand" | "amber" | "sky" | "emerald";
+
+type StatCard = {
+  label: string;
+  value: number | undefined;
+  icon: LucideIcon;
+  accent: Accent;
+  href?: string;
+};
+
+const accentChip: Record<Accent, string> = {
+  brand: "bg-[#d25b30]/10 text-[#d25b30]",
+  amber: "bg-amber-100 text-amber-700",
+  sky: "bg-sky-100 text-sky-700",
+  emerald: "bg-emerald-100 text-emerald-700",
+};
 
 export function DashboardClient() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -61,91 +79,96 @@ export function DashboardClient() {
     };
   }, []);
 
-  const cards = [
-    { label: "Contratos cargados", value: stats?.total },
-    { label: "Por validar", value: stats?.pendingValidation },
-    { label: "Cotizaciones base generadas", value: stats?.baseQuotesGenerated },
-    { label: "Pólizas base emitidas", value: stats?.basePoliciesIssued },
-    { label: "Otrosíes en revisión", value: stats?.amendmentsInReview },
-    { label: "Otrosíes emitidos", value: stats?.issuedAmendments },
+  const isLoading = !stats && !error;
+
+  const cards: StatCard[] = [
+    {
+      label: "Contratos cargados",
+      value: stats?.total,
+      icon: FileText,
+      accent: "brand",
+      href: "/contratos",
+    },
+    {
+      label: "Por validar",
+      value: stats?.pendingValidation,
+      icon: PencilLine,
+      accent: "amber",
+      href: "/contratos?estado=pendiente_validacion",
+    },
+    {
+      label: "Cotizaciones base",
+      value: stats?.baseQuotesGenerated,
+      icon: FileSpreadsheet,
+      accent: "sky",
+      href: "/contratos?panel=con_cotizacion",
+    },
+    {
+      label: "Pólizas base emitidas",
+      value: stats?.basePoliciesIssued,
+      icon: ShieldCheck,
+      accent: "emerald",
+      href: "/contratos?panel=emitida",
+    },
+    {
+      label: "Otrosíes en revisión",
+      value: stats?.amendmentsInReview,
+      icon: FileStack,
+      accent: "amber",
+    },
+    {
+      label: "Otrosíes emitidos",
+      value: stats?.issuedAmendments,
+      icon: CheckCircle2,
+      accent: "emerald",
+    },
   ];
 
   return (
     <div className="space-y-8">
-      <section className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
-        <div className="rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-          <Image
-            src="/brand/Logo_Color_Afisec_cuadrado.png"
-            alt="AFISEC"
-            width={68}
-            height={80}
-            className="h-16 w-auto"
-            priority
-          />
-          <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-neutral-950">
-            AFISEC | Gestión de cotizaciones contractuales
-          </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-neutral-600">
-            Centraliza la revisión de contratos, la validación de amparos y la
-            generación de cotizaciones para pólizas de cumplimiento.
+      <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
+            Resumen
           </p>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-neutral-600">
-            Gestiona el flujo completo desde la carga documental hasta la
-            cotización versionada y la emisión de la póliza base.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Link
-              href="/upload"
-              className="inline-flex h-11 items-center justify-center rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28]"
-            >
-              Cargar contrato
-            </Link>
-            <Link
-              href="/contratos"
-              className="inline-flex h-11 items-center justify-center rounded-lg border border-neutral-300 bg-white px-5 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-50"
-            >
-              Consultar contratos
-            </Link>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-neutral-200 bg-neutral-950 p-8 text-white shadow-sm">
-          <p className="text-sm font-medium text-[#f0c5b6]">
-            Flujo comercial AFISEC
-          </p>
-          <p className="mt-4 text-2xl font-semibold leading-tight">
-            Del contrato a la cotización validada.
-          </p>
-          <p className="mt-4 text-sm leading-6 text-neutral-300">
-            Carga contratos u órdenes, revisa la información extraída, valida
-            amparos y genera cotizaciones versionadas antes de emitir la póliza
-            base.
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-950 sm:text-3xl">
+            Inicio
+          </h2>
+          <p className="mt-2 text-sm text-neutral-500">
+            Indicadores operativos y accesos rápidos del flujo de cotización.
           </p>
         </div>
-      </section>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Link
+            href="/upload"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-[var(--shadow-soft)] transition hover:bg-[#b94d28] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#d25b30]/25"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            Cargar contrato
+          </Link>
+          <Link
+            href="/contratos"
+            className="inline-flex h-11 items-center justify-center rounded-lg border border-neutral-300 bg-white px-5 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-neutral-200"
+          >
+            Consultar contratos
+          </Link>
+        </div>
+      </header>
 
       {error ? (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700">
           {error}
         </div>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-        {cards.map((card, index) => (
-          <div
-            key={card.label}
-            className={`rounded-lg border p-5 shadow-sm ${statStyles[index]}`}
-          >
-            <p className="text-sm font-medium text-neutral-600">{card.label}</p>
-            <p className="mt-3 text-3xl font-semibold tracking-tight text-neutral-950">
-              {typeof card.value === "number" ? card.value : "—"}
-            </p>
-          </div>
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {cards.map((card) => (
+          <StatTile key={card.label} card={card} isLoading={isLoading} />
         ))}
       </section>
 
       {stats?.version ? (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-neutral-200 pt-4 text-xs text-neutral-500">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--border)] pt-4 text-xs text-neutral-500">
           <span className="font-semibold text-neutral-700">
             v{stats.version.appVersion}
           </span>
@@ -158,6 +181,58 @@ export function DashboardClient() {
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function StatTile({
+  card,
+  isLoading,
+}: {
+  card: StatCard;
+  isLoading: boolean;
+}) {
+  const Icon = card.icon;
+  const content = (
+    <>
+      <div className="flex items-start justify-between">
+        <span
+          className={`inline-flex h-10 w-10 items-center justify-center rounded-lg ${accentChip[card.accent]}`}
+        >
+          <Icon className="h-5 w-5" aria-hidden />
+        </span>
+        {card.href ? (
+          <ArrowUpRight
+            className="h-4 w-4 text-neutral-300 transition group-hover:text-[#d25b30]"
+            aria-hidden
+          />
+        ) : null}
+      </div>
+      <p className="mt-4 text-sm font-medium text-neutral-600">{card.label}</p>
+      {isLoading ? (
+        <span className="mt-2 block h-9 w-12 animate-pulse rounded-md bg-neutral-100" />
+      ) : (
+        <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-950">
+          {typeof card.value === "number" ? card.value : "—"}
+        </p>
+      )}
+    </>
+  );
+
+  if (card.href) {
+    return (
+      <Link
+        href={card.href}
+        className="group rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-soft)] transition hover:border-[#d25b30]/30 hover:shadow-[var(--shadow-card)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#d25b30]/20"
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-soft)]">
+      {content}
     </div>
   );
 }

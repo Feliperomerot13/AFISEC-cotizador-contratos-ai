@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
-import Image from "next/image";
-import Link from "next/link";
+import { Inter } from "next/font/google";
+import { AppShell } from "@/components/app-shell";
 import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
+});
 
 export const metadata: Metadata = {
   title: "AFISEC | Gestión de cotizaciones contractuales",
@@ -14,53 +20,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es">
+    <html lang="es" className={inter.variable}>
       <body>
-        <header className="border-b border-neutral-200 bg-white">
-          <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
-            <Link href="/" className="flex items-center gap-3">
-              <Image
-                src="/brand/Logo_Color_Afisec_cuadrado.png"
-                alt="AFISEC"
-                width={40}
-                height={47}
-                className="h-10 w-auto"
-                priority
-              />
-              <span>
-                <span className="block text-sm font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
-                  AFISEC
-                </span>
-                <span className="block text-lg font-semibold text-neutral-950">
-                  Gestión de cotizaciones
-                </span>
-              </span>
-            </Link>
-            <nav className="flex flex-wrap gap-2 text-sm font-semibold">
-              <Link
-                href="/"
-                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
-              >
-                Inicio
-              </Link>
-              <Link
-                href="/upload"
-                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
-              >
-                Cargar
-              </Link>
-              <Link
-                href="/contratos"
-                className="rounded-lg px-3 py-2 text-[#7a7a7a] transition hover:bg-neutral-100 hover:text-neutral-950"
-              >
-                Contratos
-              </Link>
-            </nav>
-          </div>
-        </header>
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6 lg:px-8">
-          {children}
-        </main>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

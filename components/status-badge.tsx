@@ -40,7 +40,7 @@ export function ConfidenceBadge({
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${confidenceClasses[confidence] ?? "border-neutral-200 bg-neutral-50 text-neutral-700"}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold capitalize ${confidenceClasses[confidence] ?? "border-neutral-200 bg-neutral-50 text-neutral-700"}`}
     >
       {confidence}
     </span>
