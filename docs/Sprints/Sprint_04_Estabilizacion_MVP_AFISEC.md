@@ -189,6 +189,13 @@ Agrega columnas de prima manual y la función:
 
 La función solo concede ejecución a `service_role`.
 
+Hotfix posterior (mismo Sprint 4):
+
+`docs/supabase-migrations/20260630_sprint4_fix_documentos_tipo_documento_check.sql`
+
+Actualiza `documentos_tipo_documento_check` para permitir `orden` y
+`orden_compra`, alineado con `DOCUMENT_TYPES`. Conserva `otro` como valor legacy.
+
 ## 9. Criterios de aceptación
 
 ### Document Intelligence

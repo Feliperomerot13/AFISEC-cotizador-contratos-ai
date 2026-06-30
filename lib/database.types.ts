@@ -15,6 +15,14 @@ type TableDefinition<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
 
 type DbInt8 = number | string;
 
+/** Valores persistidos en documentos.tipo_documento (incluye otro legacy). */
+export type DocumentoTipo =
+  | "contrato_base"
+  | "orden"
+  | "orden_compra"
+  | "otrosi"
+  | "otro";
+
 export type Database = {
   public: {
     Tables: {
@@ -103,7 +111,7 @@ export type Database = {
           storage_path: string;
           mime_type: string | null;
           size_bytes: number | null;
-          tipo_documento: string;
+          tipo_documento: DocumentoTipo;
           fecha_carga: string;
           actualizado_en: string;
         },
@@ -115,7 +123,7 @@ export type Database = {
           storage_path: string;
           mime_type?: string | null;
           size_bytes?: number | null;
-          tipo_documento: string;
+          tipo_documento: DocumentoTipo;
           fecha_carga?: string;
           actualizado_en?: string;
         }

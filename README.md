@@ -132,6 +132,11 @@ original. Contiene migraciones incrementales que deben aplicarse en orden:
 4. `docs/supabase-migrations/20260519_otrosies_endosos.sql`
 5. `docs/supabase-migrations/20260527_contratos_renovacion.sql`
 6. `docs/supabase-migrations/20260630_sprint4_prima_manual_eliminacion.sql`
+7. `docs/supabase-migrations/20260630_sprint4_fix_documentos_tipo_documento_check.sql`
+
+Los valores permitidos en `documentos.tipo_documento` deben mantenerse alineados
+con `DOCUMENT_TYPES` de `lib/constants.ts` (`contrato_base`, `orden`,
+`orden_compra`, `otrosi`). La base conserva `otro` como valor legacy.
 
 Tablas utilizadas por el código:
 

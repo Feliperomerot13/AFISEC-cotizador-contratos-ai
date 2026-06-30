@@ -447,6 +447,11 @@ Los IDs y claves foráneas del dominio usan `bigint/int8`.
 La función `eliminar_contrato_no_emitido(bigint)` elimina dependencias dentro de
 una transacción y rechaza cualquier póliza u otrosí con historia emitida.
 
+`documentos.tipo_documento` debe coincidir con `DOCUMENT_TYPES`
+(`contrato_base`, `orden`, `orden_compra`, `otrosi`). PostgreSQL valida esos
+valores mediante `documentos_tipo_documento_check`; `otro` se conserva solo por
+compatibilidad histórica.
+
 ## 13. Trazabilidad de registros
 
 La aplicación conserva tres niveles de evidencia:
