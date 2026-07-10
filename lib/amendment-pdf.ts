@@ -1010,8 +1010,8 @@ function formatMoney(value: number | null | undefined, currency = "COP") {
 
   const amount = new Intl.NumberFormat("es-CO", {
     style: "decimal",
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
   }).format(value);
 
   if (currency === "COP" || !currency) {

@@ -18,6 +18,7 @@ El repositorio contiene los flujos implementados en los Sprints 1, 2 y 3:
 - extracción estructurada con Azure OpenAI y validación Zod;
 - revisión humana de datos generales, fechas, valores y amparos;
 - cálculo determinístico de valores asegurados, vigencias y primas;
+- resumen contextual generado por IA para documentos nuevos;
 - prima neta manual por amparo con cálculo automático conservado como referencia;
 - RCE/PLO como línea principal calculable y subamparos informativos;
 - manejo de anticipo, Acta de Inicio y Acta de Recibo Final;
@@ -29,7 +30,8 @@ El repositorio contiene los flujos implementados en los Sprints 1, 2 y 3:
 - cotizaciones de ajuste versionadas y emisión/reversión de otrosí;
 - histórico operativo de póliza base y otrosíes.
 - eliminación física protegida de contratos nunca emitidos;
-- versión y release visibles en el dashboard.
+- eliminación definitiva de cotizaciones no emitidas;
+- versión visible en la interfaz.
 
 No están implementados:
 
@@ -133,6 +135,7 @@ original. Contiene migraciones incrementales que deben aplicarse en orden:
 5. `docs/supabase-migrations/20260527_contratos_renovacion.sql`
 6. `docs/supabase-migrations/20260630_sprint4_prima_manual_eliminacion.sql`
 7. `docs/supabase-migrations/20260630_sprint4_fix_documentos_tipo_documento_check.sql`
+8. `docs/supabase-migrations/20260710_v041_resumen_overrides_cotizaciones.sql`
 
 Los valores permitidos en `documentos.tipo_documento` deben mantenerse alineados
 con `DOCUMENT_TYPES` de `lib/constants.ts` (`contrato_base`, `orden`,
@@ -172,6 +175,7 @@ no depende de almacenamiento persistente en el filesystem local.
 | Procesar documento base | `extracciones`, actualización de `contratos` y filas de `amparos`. |
 | Validar revisión | actualización de `contratos` y reemplazo controlado de `amparos`. |
 | Generar cotización base | nueva fila en `cotizaciones` y PDF en Storage. |
+| Eliminar cotización no emitida | borrado definitivo de fila en `cotizaciones` y PDF asociado en Storage. |
 | Emitir o revertir póliza base | actualización de estado y fechas en `cotizaciones`. |
 | Cargar otrosí | `documentos` y nueva fila secuencial en `modificaciones_contractuales`. |
 | Revisar otrosí | liquidación y snapshots en `modificaciones_contractuales`. |
@@ -203,6 +207,7 @@ Reglas centrales:
 - impuesto de timbre es una alerta y no forma parte de la prima.
 - la prima manual, cuando está activa, reemplaza la prima neta automática y
   recalcula IVA y total.
+- las fechas manuales por amparo solo aplican cuando su flag manual está activo.
 
 ## Scripts
 

@@ -1573,6 +1573,22 @@ async function saveStructuredExtraction(
   const { payload: contractUpdate, report } =
     validateContractUpdatePayload(mappedContractUpdate);
 
+  const { data: currentContract, error: currentContractError } = await supabase
+    .from("contratos")
+    .select("resumen_documento_ia")
+    .eq("id", contratoId)
+    .single();
+
+  if (currentContractError) {
+    throw new Error(
+      `Fallo al consultar el resumen vigente: ${currentContractError.message}`,
+    );
+  }
+
+  if (normalizeText(currentContract?.resumen_documento_ia)) {
+    contractUpdate.resumen_documento_ia = currentContract.resumen_documento_ia;
+  }
+
   logContractUpdateForDevelopment(contractUpdate, report);
 
   const { error: updateError } = await supabase
@@ -1735,6 +1751,9 @@ export function mapExtractionToContractUpdate(extraction: unknown): ContractUpda
     fecha_inicio: normalizeDate(record.fecha_inicio),
     fecha_fin: normalizeDate(record.fecha_fin),
     plazo: normalizeText(record.plazo),
+    resumen_documento_ia: normalizeText(
+      asRecord(record.resumen_documento).valor ?? record.resumen_documento,
+    ),
     contratante: normalizeText(
       contratante.nombre ?? contratante.valor ?? record.contratante,
     ),
@@ -1895,7 +1914,9 @@ function mapExtractionToCoverageMapping(
       tipo_vigencia: normalized.tipo_vigencia,
       base_vigencia: normalized.base_vigencia,
       fecha_desde: normalized.fecha_desde,
+      fecha_desde_manual: normalized.fecha_desde_manual,
       fecha_hasta: normalized.fecha_hasta,
+      fecha_hasta_manual: normalized.fecha_hasta_manual,
       dias_adicionales: normalized.dias_adicionales,
       fuente_pagina: normalized.fuente_pagina,
       fuente_texto: normalized.fuente_texto,
@@ -1949,6 +1970,11 @@ function validateContractUpdatePayload(update: ContractUpdate): {
     fecha_inicio: normalizeNullableDateField("fecha_inicio", update, report),
     fecha_fin: normalizeNullableDateField("fecha_fin", update, report),
     plazo: normalizeNullableTextField("plazo", update, report),
+    resumen_documento_ia: normalizeNullableTextField(
+      "resumen_documento_ia",
+      update,
+      report,
+    ),
     contratante: normalizeNullableTextField("contratante", update, report),
     contratante_nit: normalizeNullableTextField(
       "contratante_nit",
@@ -3354,7 +3380,9 @@ function validateCoverageRow(row: CoverageInsert): CoverageInsert {
       null,
     ),
     fecha_desde: normalizeDate(row.fecha_desde),
+    fecha_desde_manual: normalizeBoolean(row.fecha_desde_manual, false),
     fecha_hasta: normalizeDate(row.fecha_hasta),
+    fecha_hasta_manual: normalizeBoolean(row.fecha_hasta_manual, false),
     dias_adicionales: normalizeInteger(row.dias_adicionales),
     fuente_pagina: normalizeInteger(row.fuente_pagina),
     fuente_texto: normalizeText(row.fuente_texto),

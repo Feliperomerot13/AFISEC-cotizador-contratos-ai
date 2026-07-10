@@ -4,8 +4,13 @@ import {
   calculateAmendmentTotalsByBlock,
 } from "../lib/amendments.ts";
 import { inspectPdfPageCount } from "../lib/ai.ts";
+import { getExecutiveContact } from "../lib/constants.ts";
 import { normalizeCoverage } from "../lib/coverage-calculations.ts";
-import { formatDate } from "../lib/format.ts";
+import {
+  formatCurrency,
+  formatDate,
+  parseLocalizedNumber,
+} from "../lib/format.ts";
 import {
   getExtractionValue,
   normalizeBoolean,
@@ -20,6 +25,10 @@ import {
   evaluateDocumentIntelligencePageCoverage,
   mapExtractionToContractUpdate,
 } from "../lib/processing.ts";
+import {
+  canDeleteGeneratedQuote,
+  getNextQuoteVersion,
+} from "../lib/quotes.ts";
 import {
   aiExtractionSchema,
   amendmentExtractionSchema,
@@ -49,7 +58,35 @@ assert.equal(normalizeDate("2026-99-99"), null);
 assert.equal(normalizeNumber("$ 1.200.000.000"), 1200000000);
 assert.equal(normalizeNumber("1,200,000,000"), 1200000000);
 assert.equal(normalizeNumber("número inválido"), null);
+assert.equal(parseLocalizedNumber("$ 1.922.993.418,64"), 1922993418.64);
+assert.equal(parseLocalizedNumber("1922993418.64"), 1922993418.64);
+assert.equal(parseLocalizedNumber("1922993418,64"), 1922993418.64);
+assert.equal(formatCurrency(1922993418.64), "$ 1.922.993.418,64");
+assert.equal(formatCurrency(0), "$ 0,00");
 assert.match(formatDate("2026-12-25"), /25/);
+assert.equal(getExecutiveContact("carolina barragan")?.correo, "cbarragan@afisec.co");
+assert.equal(
+  getExecutiveContact("Viviana   Clavijo")?.nombre,
+  "Viviana Clavijo Fonseca",
+);
+assert.equal(getNextQuoteVersion([]), 1);
+assert.equal(getNextQuoteVersion([1, 3, null]), 4);
+assert.equal(
+  canDeleteGeneratedQuote({
+    estado: "generada",
+    fecha_emision: null,
+    fecha_reversion: null,
+  }),
+  true,
+);
+assert.equal(
+  canDeleteGeneratedQuote({
+    estado: "emitida",
+    fecha_emision: "2026-07-10T00:00:00.000Z",
+    fecha_reversion: null,
+  }),
+  false,
+);
 assert.deepEqual(deleteContractSchema.parse({ confirmacion: "ELIMINAR" }), {
   confirmacion: "ELIMINAR",
 });
@@ -134,6 +171,18 @@ const monthlyContractUpdate = mapExtractionToContractUpdate(
 );
 assert.equal(monthlyContractUpdate.valor_contrato, 673200000);
 assert.equal(monthlyContractUpdate.base_calculo_amparos, 673200000);
+
+const summaryContractUpdate = mapExtractionToContractUpdate(
+  buildContractExtraction({
+    resumen_documento: sourcedValue(
+      "Contrato de prestación de servicios entre Contratante y Contratista. Exige garantías de cumplimiento y responsabilidad civil.",
+    ),
+  }),
+);
+assert.match(
+  summaryContractUpdate.resumen_documento_ia,
+  /Contrato de prestación de servicios/,
+);
 
 const monthlyContractFallback = applyDeterministicContractFallbacksForTest(
   buildContractExtraction({
@@ -439,6 +488,81 @@ assert.equal(complianceCoverage.dias_vigencia, 396);
 assert.equal(complianceCoverage.prima_neta, 1640591.55);
 assert.equal(complianceCoverage.impuesto, 311712.39);
 assert.equal(complianceCoverage.prima_total, 1952303.94);
+
+const percentageModeCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.2,
+    cuantia_fija: 250000000,
+    modo_calculo: "porcentaje_valor_contrato",
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 0,
+    fuente_texto: "Cumplimiento equivalente al veinte por ciento del contrato.",
+    fuente_pagina: 1,
+    confianza: "alta",
+    tasa: 0.0025,
+  },
+  {
+    baseCalculoAmparos: 1922993418.64,
+    fechaInicio: "2024-01-01",
+    fechaFin: "2024-12-31",
+  },
+);
+
+assert.equal(percentageModeCoverage.porcentaje, 0.2);
+assert.equal(percentageModeCoverage.cuantia_fija, null);
+assert.equal(percentageModeCoverage.valor_asegurado, 384598683.73);
+assert.equal(percentageModeCoverage.prima_neta, 961496.71);
+
+const fixedModeCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.2,
+    cuantia_fija: 250000000,
+    modo_calculo: "cuantia_fija",
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 0,
+    fuente_texto: "Cumplimiento por cuantía fija.",
+    fuente_pagina: 1,
+    confianza: "alta",
+    tasa: 0.0025,
+  },
+  {
+    baseCalculoAmparos: 1922993418.64,
+    fechaInicio: "2024-01-01",
+    fechaFin: "2024-12-31",
+  },
+);
+
+assert.equal(fixedModeCoverage.porcentaje, null);
+assert.equal(fixedModeCoverage.valor_asegurado, 250000000);
+
+const manualEndDateCoverage = normalizeCoverage(
+  {
+    tipo_amparo: "Cumplimiento",
+    porcentaje: 0.2,
+    tipo_vigencia: "contractual",
+    base_vigencia: "fecha_fin_contrato",
+    dias_adicionales: 30,
+    fecha_hasta: "2025-02-15",
+    fecha_hasta_manual: true,
+    fuente_texto: "Cumplimiento con fecha final revisada.",
+    fuente_pagina: 1,
+    confianza: "alta",
+    tasa: 0.0025,
+  },
+  {
+    baseCalculoAmparos: 1922993418.64,
+    fechaInicio: "2024-01-01",
+    fechaFin: "2024-12-31",
+  },
+);
+
+assert.equal(manualEndDateCoverage.fecha_hasta, "2025-02-15");
+assert.equal(manualEndDateCoverage.fecha_hasta_manual, true);
+assert.equal(manualEndDateCoverage.dias_adicionales, 30);
 
 const manualPremiumCoverage = normalizeCoverage(
   {

@@ -9,17 +9,66 @@ export function formatCurrency(value: number | null | undefined, currency = "COP
     return "Sin valor";
   }
 
-  const roundedValue = Math.round(Number(value));
+  const numericValue = Number(value);
 
-  if (!Number.isFinite(roundedValue)) {
+  if (!Number.isFinite(numericValue)) {
     return "Sin valor";
   }
 
-  return new Intl.NumberFormat("es-CO", {
+  const amount = new Intl.NumberFormat("es-CO", {
     style: "decimal",
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  }).format(roundedValue);
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  }).format(numericValue);
+
+  return `$ ${amount}`;
+}
+
+export function parseLocalizedNumber(value: string | number | null | undefined) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const clean = value
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[^0-9.,-]/g, "");
+
+  if (!clean || clean === "-" || clean === "," || clean === ".") {
+    return null;
+  }
+
+  const lastComma = clean.lastIndexOf(",");
+  const lastDot = clean.lastIndexOf(".");
+  let normalized = clean;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const groupingSeparator = decimalSeparator === "," ? "." : ",";
+    const groupingPattern = groupingSeparator === "." ? /\./g : /,/g;
+    normalized = clean
+      .replace(groupingPattern, "")
+      .replace(decimalSeparator, ".");
+  } else if (lastComma >= 0) {
+    normalized = clean.replace(/\./g, "").replace(",", ".");
+  } else if ((clean.match(/\./g) ?? []).length > 1) {
+    normalized = clean.replace(/\./g, "");
+  } else if (lastDot >= 0) {
+    const decimals = clean.length - lastDot - 1;
+    const integerPart = clean.slice(0, lastDot).replace("-", "");
+    normalized =
+      decimals === 3 && integerPart.length >= 1 && integerPart.length <= 3
+        ? clean.replace(/\./g, "")
+        : clean;
+  }
+
+  const parsed = Number(normalized);
+
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function formatDate(value: unknown) {

@@ -89,6 +89,7 @@ export function generateQuotePdf({
   function addHeader() {
     ensureSpace(96);
     const current = page();
+    const commercialContact = snapshot.comercial;
 
     current.commands.push(
       `1 1 1 rg ${MARGIN_X} ${current.y - 76} ${CONTENT_WIDTH} 86 re f`,
@@ -102,8 +103,19 @@ export function generateQuotePdf({
 
     current.commands.push(
       `${AFISEC_PRIMARY} rg BT /F2 16 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 16} Tm ${toPdfText("Cotización de garantías contractuales")} Tj ET`,
-      `${AFISEC_GRAY} rg BT /F1 9 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 31} Tm ${toPdfText("AFISEC")} Tj ET`,
     );
+
+    if (commercialContact) {
+      current.commands.push(
+        `${AFISEC_GRAY} rg BT /F1 8 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 31} Tm ${toPdfText(`${commercialContact.nombre} · ${commercialContact.cargo}`)} Tj ET`,
+        `${AFISEC_GRAY} rg BT /F1 8 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 43} Tm ${toPdfText(`${commercialContact.correo} · ${commercialContact.telefono}`)} Tj ET`,
+        `${AFISEC_GRAY} rg BT /F1 7.5 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 55} Tm ${toPdfText(`${commercialContact.sitio_web} · ${commercialContact.direccion}`)} Tj ET`,
+      );
+    } else if (snapshot.cliente.ejecutivo) {
+      current.commands.push(
+        `${AFISEC_GRAY} rg BT /F1 8 Tf 1 0 0 1 ${MARGIN_X + 58} ${current.y - 31} Tm ${toPdfText(`Comercial: ${snapshot.cliente.ejecutivo}`)} Tj ET`,
+      );
+    }
 
     addTableRows(
       [
@@ -1011,8 +1023,8 @@ function formatMoney(value: number | null, currency = "COP") {
 
   const amount = new Intl.NumberFormat("es-CO", {
     style: "decimal",
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
   }).format(value);
 
   if (currency === "COP" || !currency) {

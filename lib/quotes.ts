@@ -1,4 +1,5 @@
 import type { Amparo, Cliente, Contrato, Cotizacion, Json } from "@/lib/database.types";
+import { getExecutiveContact, type ExecutiveContact } from "@/lib/constants";
 
 export type QuoteSnapshotCoverage = {
   tipo_amparo: string;
@@ -32,6 +33,7 @@ export type QuoteSnapshot = {
     nit: string;
     ejecutivo: string;
   };
+  comercial: ExecutiveContact | null;
   contrato: {
     id: string | number;
     numero_contrato: string | null;
@@ -96,6 +98,7 @@ export function buildQuoteSnapshot({
       nit: client.nit ?? "Sin dato",
       ejecutivo: client.ejecutivo,
     },
+    comercial: getExecutiveContact(client.ejecutivo),
     contrato: {
       id: contract.id,
       numero_contrato: contract.numero_contrato,
@@ -161,6 +164,30 @@ export function buildQuoteNumber(contractId: string | number, generatedAt: strin
     .toUpperCase();
 
   return `COT-${year}-${suffix || "AFISEC"}`;
+}
+
+export function getNextQuoteVersion(
+  versions: Array<number | null | undefined>,
+) {
+  const maxVersion = versions.reduce<number>(
+    (currentMax, version) =>
+      typeof version === "number" && Number.isFinite(version)
+        ? Math.max(currentMax, version)
+        : currentMax,
+    0,
+  );
+
+  return maxVersion + 1;
+}
+
+export function canDeleteGeneratedQuote(
+  quote: Pick<Cotizacion, "estado" | "fecha_emision" | "fecha_reversion">,
+) {
+  return (
+    quote.estado === "generada" &&
+    quote.fecha_emision === null &&
+    quote.fecha_reversion === null
+  );
 }
 
 export function getQuoteSnapshot(quote: Pick<Cotizacion, "snapshot">) {

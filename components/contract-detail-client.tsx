@@ -36,6 +36,7 @@ import {
   formatCurrency,
   formatDate,
   normalizeText,
+  parseLocalizedNumber,
   percentFromDecimal,
 } from "@/lib/format";
 import {
@@ -139,6 +140,17 @@ type SourceMeta = {
   fuente?: string | null;
 };
 
+type ContractDetailTab = "contrato" | "cotizaciones" | "otrosies";
+
+const CONTRACT_DETAIL_TABS: Array<{
+  id: ContractDetailTab;
+  label: string;
+}> = [
+  { id: "contrato", label: "Contrato y amparos" },
+  { id: "cotizaciones", label: "Cotizaciones y póliza" },
+  { id: "otrosies", label: "Otrosíes" },
+];
+
 const emptyForm: ContractForm = {
   numero_contrato: "",
   objeto: "",
@@ -171,6 +183,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ContractDetailTab>(
+    getInitialContractDetailTab,
+  );
 
   const applyDetail = useCallback((nextDetail: DetailResponse) => {
     setDetail(nextDetail);
@@ -315,9 +330,11 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               fecha_desde: amparo.fecha_desde_manual
                 ? normalizeDateValue(amparo.fecha_desde)
                 : null,
+              fecha_desde_manual: amparo.fecha_desde_manual,
               fecha_hasta: amparo.fecha_hasta_manual
                 ? normalizeDateValue(amparo.fecha_hasta)
                 : null,
+              fecha_hasta_manual: amparo.fecha_hasta_manual,
               dias_adicionales: calculation.dias_adicionales,
               fuente_pagina: integerOrNull(amparo.fuente_pagina),
               fuente_texto: amparo.fuente_texto || null,
@@ -386,6 +403,25 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           method: "POST",
         }),
       "Cotización generada correctamente.",
+    );
+  }
+
+  async function onDeleteQuote(quoteId: string | number) {
+    const confirmed = window.confirm(
+      "Esta acción eliminará definitivamente la cotización y su PDF. No se puede deshacer.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    await runQuoteAction(
+      `delete:${quoteId}`,
+      () =>
+        fetch(`/api/quotes/${quoteId}`, {
+          method: "DELETE",
+        }),
+      "Cotización eliminada correctamente.",
     );
   }
 
@@ -531,6 +567,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     detail.amparos,
   );
 
+  function changeActiveTab(tab: ContractDetailTab) {
+    setActiveTab(tab);
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", tab);
+    window.history.replaceState(null, "", url);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
@@ -544,6 +592,17 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           <p className="mt-2 text-sm text-neutral-500">
             NIT {detail.client.nit} · {detail.client.ejecutivo}
           </p>
+          <dl className="mt-4 grid gap-3 text-sm text-neutral-600 sm:grid-cols-3">
+            <Metadata
+              label="Contrato / orden"
+              value={detail.contract.numero_contrato ?? "Sin número"}
+            />
+            <Metadata
+              label="Tipo documental"
+              value={firstDocument?.tipo_documento ?? "Sin documento"}
+            />
+            <Metadata label="Comercial" value={detail.client.ejecutivo} />
+          </dl>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <StatusBadge state={detail.contract.estado} />
@@ -597,36 +656,28 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         </div>
       ) : null}
 
-      <QuotePanel
-        contract={detail.contract}
-        quotes={quotes}
-        activeIssuedQuote={activeIssuedQuote}
-        contractState={detail.contract.estado}
-        canGenerateQuote={canGenerateQuote}
-        quoteAction={quoteAction}
-        onGenerateQuote={onGenerateQuote}
-        onEmitQuote={onEmitQuote}
-        onRevertQuote={onRevertQuote}
-        onRenewQuote={onRenewQuote}
+      <DocumentSummary summary={detail.contract.resumen_documento_ia} />
+
+      <ContractDetailTabs
+        activeTab={activeTab}
+        onChange={changeActiveTab}
       />
 
-      <AmendmentsPanel
-        baseQuote={activeIssuedQuote}
-        contract={detail.contract}
-        baseAmparos={detail.amparos}
-        modificaciones={detail.modificaciones ?? []}
-        cotizacionesAjuste={detail.cotizacionesAjuste ?? []}
-        onChanged={loadDetail}
-      />
+      <section
+        id="tab-panel-contrato"
+        role="tabpanel"
+        aria-labelledby="tab-contrato"
+        hidden={activeTab !== "contrato"}
+        className="space-y-6"
+      >
+        {activeIssuedQuote ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+            La póliza base emitida bloquea la edición directa de datos, amparos,
+            tasas, primas y validación. El historial y el PDF siguen disponibles.
+          </div>
+        ) : null}
 
-      {activeIssuedQuote ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
-          La póliza base emitida bloquea la edición directa de datos, amparos,
-          tasas, primas y validación. El historial y el PDF siguen disponibles.
-        </div>
-      ) : null}
-
-      <form onSubmit={onValidate}>
+        <form onSubmit={onValidate}>
         <fieldset
           disabled={isIssuedLocked}
           className="space-y-6 disabled:opacity-70"
@@ -664,6 +715,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               inputMode="decimal"
               value={form.valor_contrato}
               onChange={(value) => updateForm(setForm, "valor_contrato", value)}
+              onBlur={(value) =>
+                updateForm(setForm, "valor_contrato", formatCurrencyInputValue(value))
+              }
               source={ai?.valor_contrato}
             />
             <EditableField
@@ -673,6 +727,13 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               value={form.base_calculo_amparos}
               onChange={(value) =>
                 updateForm(setForm, "base_calculo_amparos", value)
+              }
+              onBlur={(value) =>
+                updateForm(
+                  setForm,
+                  "base_calculo_amparos",
+                  formatCurrencyInputValue(value),
+                )
               }
               source={ai?.valor_contrato}
             />
@@ -878,6 +939,11 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               const isAdvanceCoverage =
                 calculation.tipo_amparo === "buen_manejo_anticipo";
               const rateIssue = getRateInputIssue(amparo.tasa);
+              const coverageMode = getEditableCoverageMode(amparo, calculation);
+              const isPercentageMode = coverageMode === "porcentaje_valor_contrato";
+              const isFixedMode = coverageMode === "cuantia_fija";
+              const isDerivedInsuredValue =
+                isPercentageMode || isFixedMode || isAdvanceCoverage;
 
               return (
                 <div
@@ -890,6 +956,26 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       value={amparo.tipo_amparo}
                       onChange={(value) => updateAmparo(index, "tipo_amparo", value)}
                     />
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-neutral-700">
+                        Modo cálculo
+                      </span>
+                      <select
+                        value={coverageMode}
+                        onChange={(event) =>
+                          updateAmparo(index, "modo_calculo", event.target.value)
+                        }
+                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                      >
+                        <option value="porcentaje_valor_contrato">
+                          Porcentaje sobre base
+                        </option>
+                        <option value="cuantia_fija">Cuantía fija</option>
+                        <option value="valor_asegurado_manual">
+                          Valor asegurado manual
+                        </option>
+                      </select>
+                    </label>
                     <EditableAmparoField
                       label={isAdvanceCoverage ? "Porcentaje anticipo %" : "Porcentaje %"}
                       type="text"
@@ -900,14 +986,33 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                           : amparo.porcentaje
                       }
                       onChange={(value) => updateAmparo(index, "porcentaje", value)}
+                      disabled={isFixedMode}
+                      help={
+                        isFixedMode
+                          ? "No aplica mientras el modo sea cuantía fija."
+                          : "Digite 20 para representar 20%."
+                      }
                     />
                     <EditableAmparoField
                       label="Valor asegurado"
                       type="text"
                       inputMode="decimal"
-                      value={amparo.valor_asegurado}
+                      value={
+                        isDerivedInsuredValue
+                          ? formatCurrency(calculation.valor_asegurado, form.moneda || "COP")
+                          : amparo.valor_asegurado
+                      }
                       onChange={(value) =>
                         updateAmparo(index, "valor_asegurado", value)
+                      }
+                      onBlur={(value) =>
+                        updateAmparo(index, "valor_asegurado", formatCurrencyInputValue(value))
+                      }
+                      disabled={isDerivedInsuredValue}
+                      help={
+                        isPercentageMode
+                          ? "Se calcula automáticamente desde la base y el porcentaje."
+                          : undefined
                       }
                     />
                     {isAdvanceCoverage ? (
@@ -918,6 +1023,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         value={amparo.valor_base_calculo}
                         onChange={(value) =>
                           updateAmparo(index, "valor_base_calculo", value)
+                        }
+                        onBlur={(value) =>
+                          updateAmparo(index, "valor_base_calculo", formatCurrencyInputValue(value))
                         }
                         help="Edite este valor si la base del anticipo no corresponde al valor total del contrato."
                       />
@@ -984,6 +1092,15 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       inputMode="decimal"
                       value={amparo.cuantia_fija}
                       onChange={(value) => updateAmparo(index, "cuantia_fija", value)}
+                      onBlur={(value) =>
+                        updateAmparo(index, "cuantia_fija", formatCurrencyInputValue(value))
+                      }
+                      disabled={isPercentageMode}
+                      help={
+                        isPercentageMode
+                          ? "No aplica mientras el modo sea porcentaje sobre base."
+                          : undefined
+                      }
                     />
                     <EditableAmparoField
                       label="Tasa (%)"
@@ -1025,6 +1142,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                         onChange={(value) =>
                           updateAmparo(index, "prima_neta_manual", value)
                         }
+                        onBlur={(value) =>
+                          updateAmparo(index, "prima_neta_manual", formatCurrencyInputValue(value))
+                        }
                         help="El IVA y la prima total se calculan sobre este valor."
                       />
                     ) : null}
@@ -1038,6 +1158,12 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                       value={amparo.dias_adicionales}
                       onChange={(value) =>
                         updateAmparo(index, "dias_adicionales", value)
+                      }
+                      disabled={amparo.fecha_hasta_manual}
+                      help={
+                        amparo.fecha_hasta_manual
+                          ? "No se aplica mientras la fecha fin manual esté activa."
+                          : undefined
                       }
                     />
                     <label className="space-y-2">
@@ -1266,7 +1392,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
       </section>
 
       <section className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
-        <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+        <div className="grid gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
           <label className="space-y-2">
             <span className="text-sm font-medium text-neutral-700">
               Validado por
@@ -1294,10 +1420,66 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                 ? "Guardando..."
                 : "Confirmar validación"}
           </button>
+          <button
+            type="button"
+            onClick={onGenerateQuote}
+            disabled={!canGenerateQuote || quoteAction !== null}
+            className="h-11 rounded-lg border border-[#d25b30] bg-white px-5 text-sm font-semibold text-[#b94d28] shadow-sm transition hover:bg-[#d25b30]/5 disabled:cursor-not-allowed disabled:border-neutral-300 disabled:text-neutral-400"
+          >
+            {quoteAction === "generate"
+              ? "Generando..."
+              : detail.contract.estado !== "validado"
+                ? "Validación requerida"
+                : activeIssuedQuote
+                  ? "Póliza emitida"
+                  : "Generar cotización"}
+          </button>
         </div>
       </section>
         </fieldset>
-      </form>
+        </form>
+      </section>
+
+      <section
+        id="tab-panel-cotizaciones"
+        role="tabpanel"
+        aria-labelledby="tab-cotizaciones"
+        hidden={activeTab !== "cotizaciones"}
+      >
+        <QuotePanel
+          contract={detail.contract}
+          quotes={quotes}
+          activeIssuedQuote={activeIssuedQuote}
+          quoteAction={quoteAction}
+          onEmitQuote={onEmitQuote}
+          onRevertQuote={onRevertQuote}
+          onRenewQuote={onRenewQuote}
+          onDeleteQuote={onDeleteQuote}
+        />
+      </section>
+
+      <section
+        id="tab-panel-otrosies"
+        role="tabpanel"
+        aria-labelledby="tab-otrosies"
+        hidden={activeTab !== "otrosies"}
+      >
+        {activeIssuedQuote ? (
+          <AmendmentsPanel
+            baseQuote={activeIssuedQuote}
+            contract={detail.contract}
+            baseAmparos={detail.amparos}
+            modificaciones={detail.modificaciones ?? []}
+            cotizacionesAjuste={detail.cotizacionesAjuste ?? []}
+            onChanged={loadDetail}
+          />
+        ) : (
+          <div className="rounded-lg border border-dashed border-neutral-300 bg-white p-6 text-sm text-neutral-600 shadow-sm">
+            Para cargar y liquidar otrosíes primero debe existir una póliza base
+            emitida activa.
+          </div>
+        )}
+      </section>
     </div>
   );
 
@@ -1307,15 +1489,50 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
     value: string | boolean | CoverageSubamparo[],
   ) {
     setAmparos((items) =>
-      items.map((item, itemIndex) =>
-        itemIndex === index
-          ? {
-              ...item,
-              [key]: value,
-              tasa_manual: key === "tasa" ? true : item.tasa_manual,
-            }
-          : item,
-      ),
+      items.map((item, itemIndex) => {
+        if (itemIndex !== index) {
+          return item;
+        }
+
+        const next: EditableAmparo = {
+          ...item,
+          [key]: value,
+          tasa_manual: key === "tasa" ? true : item.tasa_manual,
+        } as EditableAmparo;
+
+        if (key === "porcentaje" && typeof value === "string" && value.trim()) {
+          next.modo_calculo = "porcentaje_valor_contrato";
+          next.cuantia_fija = "";
+          next.valor_asegurado = "";
+        }
+
+        if (key === "cuantia_fija" && typeof value === "string" && value.trim()) {
+          next.modo_calculo = "cuantia_fija";
+          next.porcentaje = "";
+          next.valor_asegurado = "";
+        }
+
+        if (key === "valor_asegurado" && typeof value === "string" && value.trim()) {
+          next.modo_calculo = "valor_asegurado_manual";
+          next.porcentaje = "";
+          next.cuantia_fija = "";
+        }
+
+        if (key === "modo_calculo" && typeof value === "string") {
+          if (value === "porcentaje_valor_contrato") {
+            next.cuantia_fija = "";
+            next.valor_asegurado = "";
+          } else if (value === "cuantia_fija") {
+            next.porcentaje = "";
+            next.valor_asegurado = "";
+          } else if (value === "valor_asegurado_manual") {
+            next.porcentaje = "";
+            next.cuantia_fija = "";
+          }
+        }
+
+        return next;
+      }),
     );
   }
 
@@ -1340,28 +1557,99 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   }
 }
 
+function ContractDetailTabs({
+  activeTab,
+  onChange,
+}: {
+  activeTab: ContractDetailTab;
+  onChange: (tab: ContractDetailTab) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Secciones del contrato"
+      className="grid gap-2 rounded-lg border border-neutral-200 bg-white p-2 shadow-sm sm:grid-cols-3"
+    >
+      {CONTRACT_DETAIL_TABS.map((tab) => {
+        const isActive = activeTab === tab.id;
+
+        return (
+          <button
+            key={tab.id}
+            id={`tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            aria-controls={`tab-panel-${tab.id}`}
+            tabIndex={isActive ? 0 : -1}
+            onClick={() => onChange(tab.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
+                return;
+              }
+
+              event.preventDefault();
+              const currentIndex = CONTRACT_DETAIL_TABS.findIndex(
+                (item) => item.id === activeTab,
+              );
+              const offset = event.key === "ArrowRight" ? 1 : -1;
+              const nextIndex =
+                (currentIndex + offset + CONTRACT_DETAIL_TABS.length) %
+                CONTRACT_DETAIL_TABS.length;
+              onChange(CONTRACT_DETAIL_TABS[nextIndex].id);
+            }}
+            className={[
+              "h-10 rounded-md px-3 text-sm font-semibold outline-none transition focus-visible:ring-4 focus-visible:ring-[#d25b30]/20",
+              isActive
+                ? "bg-[#d25b30] text-white shadow-sm"
+                : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-950",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DocumentSummary({ summary }: { summary: string | null }) {
+  return (
+    <section className="rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-neutral-900">
+          Resumen del documento
+        </h2>
+        <span className="rounded-full bg-[#d25b30]/10 px-2 py-0.5 text-xs font-semibold text-[#b94d28]">
+          Generado por IA
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-neutral-700">
+        {summary?.trim() ||
+          "Este contrato fue procesado antes de incorporar el resumen contextual. No se reprocesa automáticamente para conservar la trazabilidad."}
+      </p>
+    </section>
+  );
+}
+
 function QuotePanel({
   contract,
   quotes,
   activeIssuedQuote,
-  contractState,
-  canGenerateQuote,
   quoteAction,
-  onGenerateQuote,
   onEmitQuote,
   onRevertQuote,
   onRenewQuote,
+  onDeleteQuote,
 }: {
   contract: Contrato;
   quotes: Cotizacion[];
   activeIssuedQuote: Cotizacion | null;
-  contractState: string;
-  canGenerateQuote: boolean;
   quoteAction: string | null;
-  onGenerateQuote: () => void;
   onEmitQuote: (quoteId: string | number) => void;
   onRevertQuote: (quoteId: string | number) => void;
   onRenewQuote: (fechaInicio: string, fechaFin: string) => void;
+  onDeleteQuote: (quoteId: string | number) => void;
 }) {
   const activeSnapshot = activeIssuedQuote
     ? getQuoteSnapshot(activeIssuedQuote)
@@ -1424,20 +1712,6 @@ function QuotePanel({
               Prorrogar
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={onGenerateQuote}
-            disabled={!canGenerateQuote || quoteAction !== null}
-            className="h-11 rounded-lg bg-[#d25b30] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
-          >
-            {quoteAction === "generate"
-              ? "Generando..."
-              : contractState !== "validado"
-                ? "Validación requerida"
-                : activeIssuedQuote
-                  ? "Póliza emitida"
-                  : "Generar cotización PDF"}
-          </button>
         </div>
       </div>
 
@@ -1502,6 +1776,7 @@ function QuotePanel({
         quoteAction={quoteAction}
         onEmitQuote={onEmitQuote}
         onRevertQuote={onRevertQuote}
+        onDeleteQuote={onDeleteQuote}
       />
 
       {referenceQuote && referenceSnapshot ? (
@@ -1525,12 +1800,14 @@ function QuotesHistoryTable({
   quoteAction,
   onEmitQuote,
   onRevertQuote,
+  onDeleteQuote,
 }: {
   quotes: Cotizacion[];
   activeIssuedQuote: Cotizacion | null;
   quoteAction: string | null;
   onEmitQuote: (quoteId: string | number) => void;
   onRevertQuote: (quoteId: string | number) => void;
+  onDeleteQuote: (quoteId: string | number) => void;
 }) {
   if (quotes.length === 0) {
     return (
@@ -1593,18 +1870,30 @@ function QuotesHistoryTable({
                       label="PDF"
                     />
                     {quote.estado === "generada" ? (
-                      <button
-                        type="button"
-                        onClick={() => onEmitQuote(quote.id)}
-                        disabled={activeIssuedQuote !== null || quoteAction !== null}
-                        className="h-9 rounded-lg bg-neutral-950 px-3 text-xs font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
-                      >
-                        {activeIssuedQuote
-                          ? "Emisión activa"
-                          : quoteAction === `emit:${quote.id}`
-                            ? "Emitiendo"
-                            : "Emitir"}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onEmitQuote(quote.id)}
+                          disabled={activeIssuedQuote !== null || quoteAction !== null}
+                          className="h-9 rounded-lg bg-neutral-950 px-3 text-xs font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-400"
+                        >
+                          {activeIssuedQuote
+                            ? "Emisión activa"
+                            : quoteAction === `emit:${quote.id}`
+                              ? "Emitiendo"
+                              : "Emitir"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteQuote(quote.id)}
+                          disabled={quoteAction !== null}
+                          className="h-9 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-neutral-400"
+                        >
+                          {quoteAction === `delete:${quote.id}`
+                            ? "Eliminando"
+                            : "Eliminar"}
+                        </button>
+                      </>
                     ) : null}
                     {quote.estado === "emitida" ? (
                       <button
@@ -1913,6 +2202,7 @@ function EditableField({
   label,
   value,
   onChange,
+  onBlur,
   source,
   type = "text",
   inputMode,
@@ -1921,6 +2211,7 @@ function EditableField({
   label: string;
   value: string;
   onChange: (value: string) => void;
+  onBlur?: (value: string) => void;
   source?: SourceMeta;
   type?: "text" | "number" | "date";
   inputMode?: "decimal" | "numeric";
@@ -1947,6 +2238,7 @@ function EditableField({
         autoComplete={type === "date" ? "off" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onBlur={(event) => onBlur?.(event.target.value)}
         className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
       />
       <SourceBlock source={source} />
@@ -1997,21 +2289,25 @@ function EditableAmparoField({
   label,
   value,
   onChange,
+  onBlur,
   type = "text",
   inputMode,
   help,
   warning,
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  onBlur?: (value: string) => void;
   type?: "text" | "number" | "date";
   inputMode?: "decimal" | "numeric";
   help?: string;
   warning?: string | null;
+  disabled?: boolean;
 }) {
   return (
-    <label className="space-y-2">
+    <label className={`space-y-2 ${disabled ? "opacity-60" : ""}`}>
       <span className="text-sm font-medium text-neutral-700">{label}</span>
       <input
         type={type}
@@ -2020,7 +2316,9 @@ function EditableAmparoField({
         autoComplete={type === "date" ? "off" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+        onBlur={(event) => onBlur?.(event.target.value)}
+        disabled={disabled}
+        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 disabled:cursor-not-allowed disabled:bg-neutral-100"
       />
       {warning ? (
         <span className="block text-xs font-medium leading-5 text-amber-700">
@@ -2301,6 +2599,18 @@ function normalizeExecutiveForForm(value: string | null | undefined): string {
     : DEFAULT_EXECUTIVE;
 }
 
+function getInitialContractDetailTab(): ContractDetailTab {
+  if (typeof window === "undefined") {
+    return "contrato";
+  }
+
+  const tab = new URLSearchParams(window.location.search).get("tab");
+
+  return CONTRACT_DETAIL_TABS.some((item) => item.id === tab)
+    ? (tab as ContractDetailTab)
+    : "contrato";
+}
+
 function contractToForm(
   contract: Contrato,
   extraction: AIExtraction | null,
@@ -2328,9 +2638,13 @@ function contractToForm(
         ? contract.tipo_contrato
         : "",
     valor_contrato:
-      contract.valor_contrato === null ? "" : String(contract.valor_contrato),
+      contract.valor_contrato === null
+        ? ""
+        : formatCurrencyInputValue(String(contract.valor_contrato)),
     base_calculo_amparos:
-      calculationBase === null ? "" : String(calculationBase),
+      calculationBase === null
+        ? ""
+        : formatCurrencyInputValue(String(calculationBase)),
     base_calculo_incluye_iva:
       booleanToIvaChoice(contract.base_calculo_incluye_iva) ??
       inferBaseIncludesIvaChoice(extraction),
@@ -2363,9 +2677,14 @@ function amparoToEditable(
     id: amparo.id,
     tipo_amparo: amparo.tipo_amparo,
     porcentaje: percentFromDecimal(amparo.porcentaje),
-    cuantia_fija: amparo.cuantia_fija === null ? "" : String(amparo.cuantia_fija),
+    cuantia_fija:
+      amparo.cuantia_fija === null
+        ? ""
+        : formatCurrencyInputValue(String(amparo.cuantia_fija)),
     valor_asegurado:
-      amparo.valor_asegurado === null ? "" : String(amparo.valor_asegurado),
+      amparo.valor_asegurado === null
+        ? ""
+        : formatCurrencyInputValue(String(amparo.valor_asegurado)),
     tasa: tasa === null ? "" : formatRatePercent(tasa),
     tasa_manual: amparo.tasa_manual ?? false,
     iva_porcentaje: String(amparo.iva_porcentaje ?? DEFAULT_IVA_PERCENTAGE),
@@ -2382,10 +2701,14 @@ function amparoToEditable(
       amparo.base_vigencia === "otra"
         ? amparo.base_vigencia
         : "",
-    fecha_desde: "",
-    fecha_desde_manual: false,
-    fecha_hasta: "",
-    fecha_hasta_manual: false,
+    fecha_desde: amparo.fecha_desde_manual
+      ? normalizeDateValue(amparo.fecha_desde) ?? ""
+      : "",
+    fecha_desde_manual: amparo.fecha_desde_manual ?? false,
+    fecha_hasta: amparo.fecha_hasta_manual
+      ? normalizeDateValue(amparo.fecha_hasta) ?? ""
+      : "",
+    fecha_hasta_manual: amparo.fecha_hasta_manual ?? false,
     dias_adicionales:
       amparo.dias_adicionales === null ? "" : String(amparo.dias_adicionales),
     dias_vigencia:
@@ -2394,12 +2717,14 @@ function amparoToEditable(
     prima_neta_manual:
       amparo.prima_neta_manual == null
         ? ""
-        : String(amparo.prima_neta_manual),
+        : formatCurrencyInputValue(String(amparo.prima_neta_manual)),
     usar_prima_neta_manual: amparo.usar_prima_neta_manual ?? false,
     impuesto: amparo.impuesto === null ? "" : String(amparo.impuesto),
     prima_total: amparo.prima_total === null ? "" : String(amparo.prima_total),
     valor_base_calculo:
-      amparo.valor_base_calculo === null ? "" : String(amparo.valor_base_calculo),
+      amparo.valor_base_calculo === null
+        ? ""
+        : formatCurrencyInputValue(String(amparo.valor_base_calculo)),
     modo_calculo: amparo.modo_calculo ?? "",
     fuente_pagina:
       amparo.fuente_pagina === null ? "" : String(amparo.fuente_pagina),
@@ -2651,7 +2976,7 @@ function normalizeForLooseMatch(value: string) {
 }
 
 function numberOrNull(value: string | number | null | undefined) {
-  return normalizeNumberValue(value);
+  return parseLocalizedNumber(value);
 }
 
 function integerOrNull(value: string | number | null | undefined) {
@@ -2980,6 +3305,9 @@ function stripStaleAutomaticReviewReasons(value: string) {
     "Hay fechas inválidas para calcular días de vigencia.",
     "Los días de vigencia calculados son cero o negativos.",
     "No se pudo determinar la base de vigencia.",
+    "Falta porcentaje o cuantía fija para calcular el amparo.",
+    "No hay datos suficientes para calcular el valor asegurado.",
+    "Valor asegurado ingresado manualmente sin regla de cálculo.",
   ].reduce(
     (current, reason) => current.split(reason).join(" "),
     value,
@@ -2987,12 +3315,20 @@ function stripStaleAutomaticReviewReasons(value: string) {
 }
 
 function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm) {
+  const coverageMode = getEditableCoverageMode(amparo);
+  const isFixedMode = coverageMode === "cuantia_fija";
+  const isManualInsuredValueMode = coverageMode === "valor_asegurado_manual";
+
   return normalizeCoverage(
     {
       tipo_amparo: amparo.tipo_amparo || "Amparo sin clasificar",
-      porcentaje: decimalFromPercent(amparo.porcentaje),
-      cuantia_fija: numberOrNull(amparo.cuantia_fija),
-      valor_asegurado: numberOrNull(amparo.valor_asegurado),
+      porcentaje: isFixedMode || isManualInsuredValueMode
+        ? null
+        : decimalFromPercent(amparo.porcentaje),
+      cuantia_fija: isFixedMode ? numberOrNull(amparo.cuantia_fija) : null,
+      valor_asegurado: isManualInsuredValueMode
+        ? numberOrNull(amparo.valor_asegurado)
+        : null,
       valor_base_calculo: numberOrNull(amparo.valor_base_calculo),
       tasa: decimalFromRatePercent(amparo.tasa),
       tasa_manual: amparo.tasa_manual,
@@ -3022,6 +3358,46 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
       fechaFin: normalizeDateValue(contract.fecha_fin),
     },
   );
+}
+
+function getEditableCoverageMode(
+  amparo: EditableAmparo,
+  calculation?: ReturnType<typeof normalizeCoverage>,
+) {
+  if (
+    amparo.modo_calculo === "cuantia_fija" ||
+    amparo.modo_calculo === "porcentaje_valor_contrato" ||
+    amparo.modo_calculo === "valor_asegurado_manual"
+  ) {
+    return amparo.modo_calculo;
+  }
+
+  if (numberOrNull(amparo.cuantia_fija) !== null) {
+    return "cuantia_fija";
+  }
+
+  if (numberOrNull(amparo.porcentaje) !== null) {
+    return "porcentaje_valor_contrato";
+  }
+
+  if (numberOrNull(amparo.valor_asegurado) !== null) {
+    return "valor_asegurado_manual";
+  }
+
+  if (
+    calculation?.modo_calculo === "cuantia_fija" ||
+    calculation?.modo_calculo === "valor_asegurado_manual"
+  ) {
+    return calculation.modo_calculo;
+  }
+
+  return "porcentaje_valor_contrato";
+}
+
+function formatCurrencyInputValue(value: string) {
+  const parsed = numberOrNull(value);
+
+  return parsed === null ? value : formatCurrency(parsed);
 }
 
 function findSuggestedRate(

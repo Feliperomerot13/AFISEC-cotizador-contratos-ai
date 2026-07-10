@@ -5,6 +5,7 @@ import { generateQuotePdf } from "@/lib/quote-pdf";
 import {
   buildQuoteNumber,
   buildQuoteSnapshot,
+  getNextQuoteVersion,
   getQuoteCommercialIssues,
   snapshotToJson,
 } from "@/lib/quotes";
@@ -100,7 +101,9 @@ export async function POST(_request: Request, { params }: IdContext) {
     const latestQuote = latestQuotes?.[0] ?? null;
     const quoteNumber =
       latestQuote?.numero_cotizacion ?? buildQuoteNumber(id, generatedAt);
-    const version = (latestQuote?.version ?? 0) + 1;
+    const version = getNextQuoteVersion(
+      (latestQuotes ?? []).map((quote) => quote.version),
+    );
     const snapshot = buildQuoteSnapshot({
       contract,
       client,

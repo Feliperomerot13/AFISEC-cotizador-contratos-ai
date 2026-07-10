@@ -172,7 +172,6 @@ export function DashboardClient() {
           <span className="font-semibold text-neutral-700">
             v{stats.version.appVersion}
           </span>
-          <span>{stats.version.release}</span>
           {stats.version.buildTime ? (
             <span>Build {formatBuildTime(stats.version.buildTime)}</span>
           ) : null}

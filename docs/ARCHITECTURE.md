@@ -6,6 +6,7 @@ AFISEC es una aplicación Next.js que concentra:
 
 - carga y extracción de contratos y órdenes;
 - revisión humana y cálculo de amparos;
+- resumen contextual generado por IA para documentos nuevos;
 - cotizaciones base versionadas;
 - registro y bloqueo de póliza base emitida;
 - renovación manual de pólizas renovables;
@@ -47,7 +48,7 @@ estado vigente utilizado por el siguiente otrosí.
 
 - Node.js 22.
 - Next.js 16.2.4 con App Router.
-- versión de aplicación `0.4.0`.
+- versión de aplicación `0.4.1`.
 - React 19.
 - TypeScript.
 - Tailwind CSS 4.
@@ -174,12 +175,14 @@ No deben recibir refactors generales dentro de cambios funcionales pequeños.
 8. Document Intelligence extrae texto por página.
 9. Azure OpenAI devuelve una estructura validada por Zod.
 10. El backend aplica normalizadores y fallbacks determinísticos.
-11. `coverage-calculations.ts` calcula los amparos.
-12. Se actualizan `contratos`, `amparos` y `extracciones`.
-13. El contrato queda en `pendiente_validacion`.
-14. La revisión humana se guarda mediante
+11. Si la extracción final incluye resumen documental y el contrato no tenía uno,
+    se persiste en `contratos.resumen_documento_ia`.
+12. `coverage-calculations.ts` calcula los amparos.
+13. Se actualizan `contratos`, `amparos` y `extracciones`.
+14. El contrato queda en `pendiente_validacion`.
+15. La revisión humana se guarda mediante
     `PUT /api/contracts/[id]/validate`.
-15. El contrato queda en `validado`.
+16. El contrato queda en `validado`.
 
 `contrato_base`, `orden` y `orden_compra` comparten este flujo. El subtipo se
 envía como instrucción contextual al mismo prompt y no crea modelos paralelos.
@@ -216,6 +219,9 @@ Reglas relevantes:
 - Vigencia contractual cubre el plazo completo más el periodo adicional.
 - Vigencia postcontractual inicia desde su fecha base final.
 - Overrides manuales solo se aplican cuando el usuario los activa.
+- `fecha_desde` y `fecha_hasta` guardan la fecha efectiva del amparo; los flags
+  `fecha_desde_manual` y `fecha_hasta_manual` indican si esa fecha fue fijada
+  manualmente.
 - El buen manejo de anticipo utiliza la base de anticipo.
 - RCE/PLO es una línea principal calculable.
 - Los subamparos RCE son informativos y no generan prima individual.
@@ -244,6 +250,11 @@ cotización base en estado `emitida`, el endpoint rechaza la edición directa.
 8. inserta la versión en `cotizaciones`.
 
 El PDF no muestra tasa, fuentes, confianza, JSON ni motivos internos.
+
+`DELETE /api/quotes/[id]` elimina físicamente una cotización únicamente si está
+en estado `generada` y nunca tuvo emisión ni reversión. El endpoint borra la
+fila y remueve el PDF asociado de Storage; si Storage falla, no devuelve éxito
+falso y reporta la limitación operativa.
 
 ### 8.2 Estados
 
@@ -392,6 +403,7 @@ deben aparecer en documentos comerciales.
 | `/api/contracts/[id]/validate` | PUT | Guarda revisión del contrato base. |
 | `/api/contracts/[id]/quotes` | POST | Genera cotización base. |
 | `/api/contracts/[id]/renewal` | POST | Genera cotización de renovación. |
+| `/api/quotes/[id]` | DELETE | Elimina cotización base no emitida y su PDF. |
 | `/api/quotes/[id]/download` | GET | Descarga PDF base. |
 | `/api/quotes/[id]/emit` | POST | Registra emisión de póliza base. |
 | `/api/quotes/[id]/revert` | POST | Revierte emisión base. |
@@ -452,6 +464,21 @@ una transacción y rechaza cualquier póliza u otrosí con historia emitida.
 valores mediante `documentos_tipo_documento_check`; `otro` se conserva solo por
 compatibilidad histórica.
 
+### v0.4.1
+
+`contratos` agrega:
+
+- `resumen_documento_ia`.
+
+`amparos` agrega:
+
+- `fecha_desde_manual`;
+- `fecha_hasta_manual`.
+
+Las columnas `fecha_desde` y `fecha_hasta` siguen guardando la fecha efectiva
+usada para calcular días y primas. Los flags indican si esa fecha debe tratarse
+como manual o si debe recalcularse desde la regla de vigencia.
+
 ## 13. Trazabilidad de registros
 
 La aplicación conserva tres niveles de evidencia:
@@ -469,6 +496,7 @@ Mapa de escritura:
 | Procesamiento base | log de extracción, contrato y amparos. |
 | Validación base | contrato validado y reemplazo de amparos base. |
 | Cotización base | PDF y versión nueva en `cotizaciones`. |
+| Eliminación de cotización no emitida | borrado definitivo de fila y PDF asociado. |
 | Emisión base | estado y fechas de la versión seleccionada. |
 | Carga de otrosí | documento y modificación con secuencia. |
 | Revisión de otrosí | campos revisados, liquidación y snapshots propuestos. |

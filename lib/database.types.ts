@@ -59,6 +59,7 @@ export type Database = {
           fecha_fin: string | null;
           plazo: string | null;
           renovable_automaticamente: boolean;
+          resumen_documento_ia: string | null;
           contratante: string | null;
           contratante_nit: string | null;
           contratista: string | null;
@@ -87,6 +88,7 @@ export type Database = {
           fecha_fin?: string | null;
           plazo?: string | null;
           renovable_automaticamente?: boolean;
+          resumen_documento_ia?: string | null;
           contratante?: string | null;
           contratante_nit?: string | null;
           contratista?: string | null;
@@ -153,7 +155,9 @@ export type Database = {
           tipo_vigencia: string | null;
           base_vigencia: string | null;
           fecha_desde: string | null;
+          fecha_desde_manual: boolean;
           fecha_hasta: string | null;
+          fecha_hasta_manual: boolean;
           dias_adicionales: number | null;
           fuente_pagina: number | null;
           fuente_texto: string | null;
@@ -188,7 +192,9 @@ export type Database = {
           tipo_vigencia?: string | null;
           base_vigencia?: string | null;
           fecha_desde?: string | null;
+          fecha_desde_manual?: boolean;
           fecha_hasta?: string | null;
+          fecha_hasta_manual?: boolean;
           dias_adicionales?: number | null;
           fuente_pagina?: number | null;
           fuente_texto?: string | null;

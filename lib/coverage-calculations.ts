@@ -39,6 +39,7 @@ export type CoverageCalculationInput = Partial<AIExtraction["garantias"][number]
   prima_neta_manual?: number | null;
   iva_porcentaje?: number | null;
   valor_base_calculo?: number | null;
+  modo_calculo?: string | null;
   valor_asegurado?: number | null;
   valor_anticipo?: number | null;
   porcentaje_anticipo?: number | null;
@@ -80,7 +81,9 @@ export type NormalizedCoverage = {
   tipo_vigencia: string | null;
   base_vigencia: CoverageValidityBase;
   fecha_desde: string | null;
+  fecha_desde_manual: boolean;
   fecha_hasta: string | null;
+  fecha_hasta_manual: boolean;
   dias_adicionales: number | null;
   fuente_pagina: number | null;
   fuente_texto: string | null;
@@ -183,6 +186,7 @@ export function normalizeCoverage(
   if (
     normalizeNumber(preparedCoverage.porcentaje) === null &&
     normalizeNumber(preparedCoverage.cuantia_fija) === null &&
+    normalizeNumber(preparedCoverage.valor_asegurado) === null &&
     !isAdvancePaymentCoverage(preparedCoverage)
   ) {
     reasons.add("Falta porcentaje o cuantía fija para calcular el amparo.");
@@ -237,8 +241,8 @@ export function normalizeCoverage(
     tipo_amparo: isRce
       ? "responsabilidad_civil_extracontractual"
       : preparedCoverage.tipo_amparo,
-    porcentaje: valueCalculation.porcentaje ?? preparedCoverage.porcentaje ?? null,
-    cuantia_fija: preparedCoverage.cuantia_fija ?? null,
+    porcentaje: valueCalculation.porcentaje ?? null,
+    cuantia_fija: valueCalculation.cuantia_fija ?? null,
     valor_base_calculo: valueCalculation.valor_base_calculo,
     modo_calculo: valueCalculation.modo_calculo,
     valor_asegurado: valueCalculation.valor_asegurado,
@@ -255,7 +259,9 @@ export function normalizeCoverage(
     tipo_vigencia: preparedCoverage.tipo_vigencia ?? null,
     base_vigencia: baseVigencia,
     fecha_desde: startsAt,
+    fecha_desde_manual: manualStartDateEnabled,
     fecha_hasta: endsAt,
+    fecha_hasta_manual: manualEndDateEnabled,
     dias_adicionales: getEffectiveAdditionalDays(preparedCoverage),
     fuente_pagina: preparedCoverage.fuente_pagina ?? null,
     fuente_texto: preparedCoverage.fuente_texto ?? null,
@@ -273,6 +279,7 @@ function calculateInsuredValue(
 ) {
   const fixedAmount = normalizeNumber(coverage.cuantia_fija);
   const percentage = normalizeNumber(coverage.porcentaje);
+  const requestedMode = normalizeText(coverage.modo_calculo);
   const calculationBase =
     normalizeNumber(contract.baseCalculoAmparos) ??
     normalizeNumber(contract.valorContrato);
@@ -313,6 +320,7 @@ function calculateInsuredValue(
 
       return {
         porcentaje: advancePercentage,
+        cuantia_fija: null,
         valor_base_calculo: advanceCalculationBase,
         modo_calculo: "anticipo_100",
         valor_asegurado: calculatedAdvance,
@@ -326,6 +334,7 @@ function calculateInsuredValue(
 
       return {
         porcentaje: advancePercentage,
+        cuantia_fija: null,
         valor_base_calculo: roundMoney(advanceValue),
         modo_calculo: "anticipo_100",
         valor_asegurado: roundMoney(advanceValue),
@@ -337,27 +346,44 @@ function calculateInsuredValue(
     );
     return {
       porcentaje: advancePercentage,
+      cuantia_fija: null,
       valor_base_calculo: null,
       modo_calculo: "anticipo_100",
       valor_asegurado: null,
     };
   }
 
-  if (fixedAmount !== null) {
+  if (requestedMode === "cuantia_fija" && fixedAmount !== null) {
     return {
       porcentaje: null,
+      cuantia_fija: roundMoney(fixedAmount),
       valor_base_calculo: null,
       modo_calculo: "cuantia_fija",
       valor_asegurado: roundMoney(fixedAmount),
     };
   }
 
-  if (percentage !== null && calculationBase !== null) {
+  if (
+    requestedMode !== "cuantia_fija" &&
+    percentage !== null &&
+    calculationBase !== null
+  ) {
     return {
       porcentaje: percentage,
+      cuantia_fija: null,
       valor_base_calculo: calculationBase,
       modo_calculo: "porcentaje_valor_contrato",
       valor_asegurado: roundMoney(calculationBase * percentage),
+    };
+  }
+
+  if (fixedAmount !== null) {
+    return {
+      porcentaje: null,
+      cuantia_fija: roundMoney(fixedAmount),
+      valor_base_calculo: null,
+      modo_calculo: "cuantia_fija",
+      valor_asegurado: roundMoney(fixedAmount),
     };
   }
 
@@ -368,6 +394,7 @@ function calculateInsuredValue(
 
     return {
       porcentaje: null,
+      cuantia_fija: null,
       valor_base_calculo: null,
       modo_calculo: "valor_asegurado_manual",
       valor_asegurado: roundMoney(explicitInsuredValue),
@@ -377,6 +404,7 @@ function calculateInsuredValue(
   reasons.add("No hay datos suficientes para calcular el valor asegurado.");
   return {
     porcentaje: percentage,
+    cuantia_fija: null,
     valor_base_calculo: calculationBase,
     modo_calculo: "pendiente_revision",
     valor_asegurado: null,

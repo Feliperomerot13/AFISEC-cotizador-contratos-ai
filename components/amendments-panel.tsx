@@ -19,7 +19,7 @@ import type {
   CotizacionAjuste,
   ModificacionContractual,
 } from "@/lib/database.types";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, parseLocalizedNumber } from "@/lib/format";
 import { getQuoteSnapshot } from "@/lib/quotes";
 import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
 
@@ -1486,15 +1486,7 @@ function stringFromRate(value: number | null) {
 }
 
 function numberOrNull(value: string) {
-  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
-
-  if (!normalized) {
-    return null;
-  }
-
-  const parsed = Number(normalized);
-
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseLocalizedNumber(value);
 }
 
 function rateOrNull(value: string) {

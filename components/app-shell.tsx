@@ -14,7 +14,6 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { APP_RELEASE_LABEL } from "@/lib/constants";
 import packageMetadata from "@/package.json";
 
 type NavItem = {
@@ -260,7 +259,6 @@ function Sidebar({
           <p className="font-semibold text-neutral-700">
             v{packageMetadata.version}
           </p>
-          <p className="mt-0.5 truncate">{APP_RELEASE_LABEL}</p>
         </div>
       </div>
     </aside>
@@ -288,7 +286,7 @@ function Topbar({
         {title}
       </h1>
       <span className="ml-auto hidden items-center gap-2 rounded-full border border-[var(--border)] bg-neutral-50 px-3 py-1 text-xs font-medium text-neutral-500 sm:inline-flex">
-        v{packageMetadata.version} · {APP_RELEASE_LABEL}
+        v{packageMetadata.version}
       </span>
     </header>
   );
