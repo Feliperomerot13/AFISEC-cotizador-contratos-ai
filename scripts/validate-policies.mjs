@@ -12,7 +12,7 @@ import {
   groupQuoteCoveragesByPolicy,
 } from "../lib/quotes.ts";
 import { generateQuotePdf } from "../lib/quote-pdf.ts";
-import { inspectPdf } from "./pdf-inspect.mjs";
+import { findOverflows, inspectPdf } from "./pdf-inspect.mjs";
 
 // --- Clasificador único ---
 for (const name of [
@@ -269,5 +269,71 @@ assert.ok(
     item.text.includes("P\xd3LIZA DE RESPONSABILIDAD CIVIL"),
   ),
 );
+
+// --- v0.5.1: subamparos como bloque compacto, resumen de primas, etiquetas ---
+function money(value) {
+  return `$ ${new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)}`;
+}
+
+// Ya no existe la tabla independiente de subamparos (columnas antiguas).
+assert.equal(texts.some((item) => item.text === "% sublímite"), false);
+assert.equal(texts.some((item) => item.text === "Valor sublímite"), false);
+assert.equal(texts.some((item) => item.text === "Subamparos incluidos"), false);
+
+// El bloque compacto incluye nombre, porcentaje y valor de cada subamparo, con la nota debajo.
+const compactBlock = find("Subamparos incluidos:");
+assert.ok(compactBlock);
+assert.ok(compactBlock.text.includes("PLO 100% ($ 300.000.000,00)"));
+assert.ok(compactBlock.text.includes("RC Patronal 50% ($ 150.000.000,00)"));
+assert.ok(
+  find(
+    "Los subamparos no generan prima individual; la prima corresponde a la cobertura principal RCE/PLO.",
+  ),
+);
+
+// Resumen de primas: una fila por póliza, sin fila de total general.
+assert.ok(find("Resumen de primas"));
+assert.ok(texts.some((item) => item.text === "Cumplimiento"));
+assert.ok(texts.some((item) => item.text === "Responsabilidad civil"));
+assert.ok(find(money(snapshot.polizas[0].totales.prima_total)));
+assert.ok(find(money(snapshot.polizas[1].totales.prima_total)));
+assert.equal(texts.some((item) => /total general/i.test(item.text)), false);
+
+// Etiquetas de información general: Cliente / Contratante / Contratista.
+assert.ok(texts.some((item) => item.text === "Cliente"));
+assert.ok(texts.some((item) => item.text === "Contratante"));
+assert.ok(texts.some((item) => item.text === "Contratista"));
+assert.equal(texts.some((item) => item.text === "Tomador"), false);
+assert.equal(texts.some((item) => item.text === "Asegurado / contratante"), false);
+
+// Varios subamparos deben hacer wrap en más de una línea, sin salirse de su celda ni del margen.
+const manySubamparos = applyPolicyStructure({
+  ...snapshot,
+  amparos: [
+    ...snapshot.amparos.filter((coverage) => coverage.poliza === "cumplimiento"),
+    {
+      ...snapshot.amparos.find((coverage) => coverage.poliza === "responsabilidad_civil"),
+      subamparos: [
+        { nombre: "PLO", incluido: true, calculable: true, porcentaje_sublimite: 1, valor_sublimite: 300000000 },
+        { nombre: "Contratistas y subcontratistas", incluido: true, calculable: false, porcentaje_sublimite: 0.5, valor_sublimite: 150000000 },
+        { nombre: "RC Patronal", incluido: true, calculable: false, porcentaje_sublimite: 0.5, valor_sublimite: 150000000 },
+        { nombre: "RC Cruzada", incluido: true, calculable: false, porcentaje_sublimite: 0.5, valor_sublimite: 150000000 },
+        { nombre: "Vehículos propios y no propios", incluido: true, calculable: false, porcentaje_sublimite: 0.5, valor_sublimite: 150000000 },
+      ],
+    },
+  ],
+});
+const manyPages = inspectPdf(generateQuotePdf({ quoteNumber: "COT-2026-4", version: 1, snapshot: manySubamparos }));
+const manyTexts = manyPages.flatMap((page) => page.texts);
+const firstLine = manyTexts.find((item) => item.text.startsWith("Subamparos incluidos:"));
+const lastLine = manyTexts.find((item) => item.text.includes("Veh\xedculos propios y no propios"));
+
+assert.ok(firstLine);
+assert.ok(lastLine);
+assert.notEqual(firstLine.y, lastLine.y, "el bloque de subamparos debe ocupar más de una línea");
+assert.deepEqual(findOverflows(manyPages, { pageWidth: 612, marginX: 36 }).problems, []);
 
 console.log("Validaciones de pólizas completadas.");

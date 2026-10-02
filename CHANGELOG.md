@@ -1,5 +1,18 @@
 # Historial de versiones
 
+## [0.5.1] - 2026-10-01
+
+### Cambiado
+
+- PDF de cotización: los subamparos de Responsabilidad Civil ya no se presentan
+  como tabla independiente; se muestran como bloque compacto con wrapping
+  ("Subamparos incluidos: ...") y la nota de que no generan prima individual.
+- Se agregó "Resumen de primas" antes de las observaciones comerciales, con el
+  total neto, IVA y total por póliza ya calculados (sin sumar ambas pólizas).
+- Etiquetas de "Información general" del PDF: "Tomador" vuelve a "Cliente" y
+  "Asegurado / contratante" vuelve a "Contratante". Es un cambio de
+  presentación; no afecta el modelo de datos ni las APIs.
+
 ## [0.5.0] - 2026-10-01
 
 ### Agregado

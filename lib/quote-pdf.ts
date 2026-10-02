@@ -164,7 +164,7 @@ export function generateQuotePdf({
     addTableRows(
       [
         [
-          { text: "Tomador", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: "Cliente", width: 84, bold: true, fill: TABLE_HEADER },
           { text: snapshot.cliente.nombre, width: 186 },
           { text: "NIT", width: 84, bold: true, fill: TABLE_HEADER },
           { text: snapshot.cliente.nit, width: 186 },
@@ -177,7 +177,7 @@ export function generateQuotePdf({
         ],
         [
           {
-            text: "Asegurado / contratante",
+            text: "Contratante",
             width: 84,
             bold: true,
             fill: TABLE_HEADER,
@@ -281,34 +281,32 @@ export function generateQuotePdf({
 
     const indent = 14;
     const currency = snapshot.contrato.moneda;
-    const subHeader: PdfTableCell[] = [
-      { text: "Subamparos incluidos", width: 222, bold: true, fill: TABLE_HEADER },
-      { text: "% sublímite", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
-      { text: "Valor sublímite", width: 110, bold: true, fill: TABLE_HEADER, align: "right" },
-      { text: "Prima", width: 124, bold: true, fill: TABLE_HEADER },
-    ];
+    const summary = subcoverages
+      .map((subamparo) => {
+        const percent = formatSublimitPercent(subamparo.porcentaje_sublimite);
+        const value = formatMoney(subamparo.valor_sublimite, currency);
+
+        return `${subamparo.nombre} ${percent} (${value})`;
+      })
+      .join(" · ");
 
     addTableRows(
       [
-        subHeader,
-        ...subcoverages.map((subamparo): PdfTableCell[] => [
-          { text: subamparo.nombre, width: 222 },
-          { text: formatSublimitPercent(subamparo.porcentaje_sublimite), width: 70, align: "right" },
-          { text: formatMoney(subamparo.valor_sublimite, currency), width: 110, align: "right" },
+        [
           {
-            text: subamparo.calculable ? "Línea principal" : "Sin prima individual",
-            width: 124,
-            color: subamparo.calculable ? undefined : AFISEC_GRAY,
+            text: `Subamparos incluidos: ${summary}`,
+            width: CONTENT_WIDTH - indent,
+            fill: SOFT_FILL,
           },
-        ]),
+        ],
       ],
-      { x: MARGIN_X + indent, ...rowStyle, minHeight: 16, keepTogether: true },
+      { x: MARGIN_X + indent, ...rowStyle, minHeight: 16 },
     );
     addTableRows(
       [
         [
           {
-            text: "La prima de esta póliza corresponde a la línea principal RCE/PLO; los subamparos no generan prima individual.",
+            text: "Los subamparos no generan prima individual; la prima corresponde a la cobertura principal RCE/PLO.",
             width: CONTENT_WIDTH - indent,
             fill: SOFT_FILL,
             color: AFISEC_GRAY,
@@ -368,6 +366,37 @@ export function generateQuotePdf({
     groups.forEach(addPolicySection);
   }
 
+  function addPremiumSummary() {
+    const groups = groupQuoteCoveragesByPolicy(snapshot.amparos);
+
+    if (groups.length === 0) {
+      return;
+    }
+
+    const currency = snapshot.contrato.moneda;
+
+    ensureSpace(20 + groups.length * 20 + 14);
+    addSectionTitle("Resumen de primas");
+    addTableRows(
+      [
+        [
+          { text: "Póliza", width: 160, bold: true, fill: TABLE_HEADER },
+          { text: "Prima neta", width: 100, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: "IVA", width: 90, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: "Prima total", width: 106, bold: true, fill: TABLE_HEADER, align: "right" },
+        ],
+        ...groups.map((group): PdfTableCell[] => [
+          { text: policySummaryLabel(group.nombre), width: 160 },
+          { text: formatMoney(group.totales.prima_neta, currency), width: 100, align: "right" },
+          { text: formatMoney(group.totales.iva, currency), width: 90, align: "right" },
+          { text: formatMoney(group.totales.prima_total, currency), width: 106, align: "right", bold: true },
+        ]),
+      ],
+      { fontSize: 7.5, lineHeight: 9, minHeight: 18, keepTogether: true },
+    );
+    page().y -= 18;
+  }
+
   function addCommercialNotes() {
     ensureSpace(48);
     addSectionTitle("Observaciones comerciales");
@@ -395,6 +424,7 @@ export function generateQuotePdf({
   addHeader();
   addGeneralInfoTable();
   addPolicies();
+  addPremiumSummary();
   addCommercialNotes();
 
   pages.forEach((pdfPage, index) => {
@@ -712,6 +742,13 @@ function formatSublimitPercent(value: number | null) {
   }
 
   return `${Number((value * 100).toFixed(2))}%`;
+}
+
+// "Póliza de responsabilidad civil" -> "Responsabilidad civil" para la fila del resumen.
+function policySummaryLabel(policyName: string) {
+  const withoutPrefix = policyName.replace(/^p[oó]liza de /i, "");
+
+  return withoutPrefix.charAt(0).toUpperCase() + withoutPrefix.slice(1);
 }
 
 function formatCommercialObservation(value: string) {
