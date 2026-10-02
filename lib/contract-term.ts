@@ -1,6 +1,10 @@
-import { findAdditionalPeriod, type PeriodUnit } from "@/lib/spanish-dates";
+import { findAdditionalPeriod, foldSpanish, type PeriodUnit } from "@/lib/spanish-dates";
 
 const TERM_MARKER = /;?\s*plazo calculable:[\s\S]*$/i;
+const CONTRACTUAL_TERM_LABEL =
+  /plazo de ejecucion|plazo contractual|duracion del contrato|duracion|termino de ejecucion|vigencia del contrato/g;
+const PAYMENT_WORDS =
+  /\b(pago|pagos|pagar|pagara|pagadero|pagaderos|factura|facturas|facturacion|cobro|desembolso)\b/;
 const AUTO_TERM = /^\d+ (?:día|días|mes|meses|año|años)$/;
 
 export type ContractTerm = { cantidad: number; unidad: PeriodUnit };
@@ -15,7 +19,8 @@ export function contractTermUnitLabel(unit: PeriodUnit, quantity: number) {
   return UNIT_LABELS[unit][quantity === 1 ? 0 : 1];
 }
 
-// El marcador "plazo calculable" (escrito al guardar) prevalece sobre el texto original del contrato.
+// El marcador "plazo calculable" (escrito al guardar) prevalece sobre el texto original del contrato;
+// luego el periodo ligado a lenguaje contractual, y por último cualquier periodo fuera de frases de pago.
 export function parseContractTerm(text: string | null | undefined): ContractTerm | null {
   if (!text) {
     return null;
@@ -24,9 +29,37 @@ export function parseContractTerm(text: string | null | undefined): ContractTerm
   const marker = text.match(TERM_MARKER);
   const found =
     (marker ? findAdditionalPeriod(marker[0], { preferSignal: false }) : null) ??
-    findAdditionalPeriod(text, { preferSignal: false });
+    findContractualPeriod(text) ??
+    findUnpaidPeriod(text);
 
   return found ? { cantidad: found.cantidad, unidad: found.unidad } : null;
+}
+
+function findContractualPeriod(text: string) {
+  const folded = foldSpanish(text);
+
+  for (const match of folded.matchAll(CONTRACTUAL_TERM_LABEL)) {
+    const rest = folded.slice((match.index ?? 0) + match[0].length);
+    const sentenceEnd = rest.search(/[.;](?:\s|$)/);
+    const clause = sentenceEnd >= 0 ? rest.slice(0, sentenceEnd) : rest;
+    const found = findAdditionalPeriod(clause, { preferSignal: false });
+
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
+function findUnpaidPeriod(text: string) {
+  const clauses = text
+    .split(/[.;](?:\s+|$)/)
+    .filter((clause) => !PAYMENT_WORDS.test(foldSpanish(clause)));
+
+  return clauses.length > 0
+    ? findAdditionalPeriod(clauses.join(". "), { preferSignal: false })
+    : null;
 }
 
 // Conserva el texto original y agrega "plazo calculable: N unidad" solo si difiere de lo que se lee hoy.

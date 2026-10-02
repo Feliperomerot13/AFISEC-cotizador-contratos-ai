@@ -32,6 +32,17 @@ assert.deepEqual(term("doce (12) meses contados a partir del acta de inicio"), [
 assert.deepEqual(term("Un (1) año"), [1, "anios"]);
 assert.deepEqual(term("Plazo de 2 años"), [2, "anios"]);
 assert.deepEqual(term("Plazo de ejecución: 6 meses. Pago a 30 días."), [6, "meses"]);
+assert.deepEqual(term("Pago a 30 días. Plazo de ejecución: 6 meses"), [6, "meses"]);
+assert.deepEqual(term("Plazo de ejecución: 6 meses. Pago a 30 días"), [6, "meses"]);
+assert.deepEqual(
+  term("Duración del contrato: doce (12) meses. Pago de facturas a 45 días"),
+  [12, "meses"],
+);
+assert.equal(term("Pago a 30 días"), null);
+assert.deepEqual(term("6 meses"), [6, "meses"]);
+assert.deepEqual(term("360 días"), [360, "dias"]);
+assert.deepEqual(term("1 año"), [1, "anios"]);
+assert.deepEqual(term("plazo calculable: 1 año"), [1, "anios"]);
 assert.equal(term("Hasta el acta de inicio"), null);
 assert.equal(term(""), null);
 assert.equal(term(null), null);

@@ -2101,11 +2101,7 @@ function DateTextField({
           <span className="block text-xs font-medium leading-5 text-amber-700">
             {warning}
           </span>
-        ) : (
-          <span className="block text-xs leading-5 text-neutral-500">
-            Formato DD/MM/YYYY. El cálculo se actualiza solo con fecha completa.
-          </span>
-        )}
+        ) : null}
       </label>
       <SourceBlock source={source} />
     </div>

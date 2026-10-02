@@ -1,5 +1,12 @@
 # Historial de versiones
 
+## [0.6.2] - 2026-10-01
+
+### Corregido
+
+- Se prioriza el plazo/duración contractual sobre periodos de pago o facturación al reconstruir el plazo.
+- Se elimina el texto auxiliar permanente bajo campos de fecha para reducir ruido visual.
+
 ## [0.6.1] - 2026-10-01
 
 ### Cambiado
