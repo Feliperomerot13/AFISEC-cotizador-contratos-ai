@@ -21,6 +21,9 @@
   - barra de acciones fija con "Validado por", estado de cambios y errores de
     validación junto al botón.
 - "Validado por" se preselecciona con la ejecutiva del cliente.
+- Tras la validación humana, las alertas de la IA permanecen como trazabilidad
+  (visibles en "Detalle y evidencia") pero ya no se presentan como pendientes:
+  los amparos muestran "Validado" hasta que haya cambios sin validar.
 
 ### Agregado
 

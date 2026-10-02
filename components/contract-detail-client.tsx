@@ -1071,6 +1071,7 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               calculation={view.calculation}
               form={form}
               isManual={isManual}
+              validated={detail.contract.estado === "validado" && !dirty}
               onEditingChange={setAmparoEditing}
               onChange={(key, value) => updateAmparo(view.index, key, value)}
               onDateOverride={(manualKey, valueKey, checked, calculatedValue) =>
@@ -2150,11 +2151,13 @@ function SubcoverageEditor({
   subamparos,
   currency,
   mainInsuredValue,
+  validated,
   onChange,
 }: {
   subamparos: CoverageSubamparo[];
   currency: string;
   mainInsuredValue: number | null;
+  validated: boolean;
   onChange: (subamparos: CoverageSubamparo[]) => void;
 }) {
   function updateSubamparo(
@@ -2211,7 +2214,7 @@ function SubcoverageEditor({
                 }
               >
                 {subamparo.calculable ? "calculable" : "informativo"}
-                {subamparo.requiere_revision ? " · revisar" : ""}
+                {subamparo.requiere_revision && !validated ? " · revisar" : ""}
               </span>
             </div>
             {subamparo.calculable ? (
@@ -2424,6 +2427,7 @@ function AmparoCard({
   calculation,
   form,
   isManual,
+  validated,
   onEditingChange,
   onChange,
   onDateOverride,
@@ -2433,6 +2437,7 @@ function AmparoCard({
   calculation: AmparoCalculation;
   form: ContractForm;
   isManual: boolean;
+  validated: boolean;
   onEditingChange: (
     uid: string,
     editing: boolean,
@@ -2455,7 +2460,7 @@ function AmparoCard({
     amparo.motivo_revision,
     calculation.motivo_revision,
   );
-  const needsReview = Boolean(reviewReason);
+  const needsReview = Boolean(reviewReason) && !validated;
   const hasSource = !isManual && Boolean(amparo.fuente_texto || amparo.fuente_pagina);
   const [open, setOpen] = useState(
     () => amparo.uid.startsWith("new-") || needsReview,
@@ -2504,7 +2509,7 @@ function AmparoCard({
               {isManual ? null : <ConfidenceDot confidence={amparo.confianza} />}
               <h4 className="text-base font-semibold text-neutral-950">{title}</h4>
               <ReviewChip tone={needsReview ? "review" : "ok"}>
-                {needsReview ? "Revisar" : "Listo"}
+                {validated ? "Validado" : needsReview ? "Revisar" : "Listo"}
               </ReviewChip>
             </div>
             {needsReview ? (
@@ -2858,6 +2863,7 @@ function AmparoCard({
               subamparos={calculation.subamparos}
               currency={currency}
               mainInsuredValue={calculation.valor_asegurado}
+              validated={validated}
               onChange={(nextSubamparos) => onChange("subamparos", nextSubamparos)}
             />
           ) : null}
@@ -2895,7 +2901,9 @@ function AmparoCard({
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-neutral-700">
-                    Motivo de revisión
+                    {validated && reviewReason
+                      ? "Advertencia detectada por IA antes de la validación"
+                      : "Motivo de revisión"}
                   </span>
                   <textarea
                     value={reviewReason}
