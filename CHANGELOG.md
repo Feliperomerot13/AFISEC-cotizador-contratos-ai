@@ -1,5 +1,24 @@
 # Historial de versiones
 
+## [0.6.1] - 2026-10-01
+
+### Cambiado
+
+- El plazo del contrato se captura como cantidad + unidad (Días, Meses, Años) y la
+  fecha fin se calcula con aritmética de calendario (12 meses o 1 año desde el
+  13/09/2026 terminan el 13/09/2027; 1 mes desde el 31/01/2026 termina el 28/02/2026).
+- Los contratos existentes cargan cantidad y unidad desde el plazo guardado; los
+  registros en días siguen funcionando. El plazo se persiste en el mismo campo de
+  texto, sin cambios de API ni de base de datos.
+- "Recalcular con plazo" usa cantidad + unidad; una fecha fin editada a mano no se
+  sobrescribe automáticamente.
+
+### Agregado
+
+- Selector de calendario nativo en los campos de fecha (inicio, fin y fechas
+  manuales de amparos), manteniendo la escritura manual DD/MM/YYYY.
+- Pruebas deterministas del plazo en días, meses, años y fin de mes.
+
 ## [0.6.0] - 2026-10-01
 
 ### Cambiado

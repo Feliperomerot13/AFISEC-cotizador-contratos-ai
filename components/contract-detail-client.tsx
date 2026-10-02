@@ -18,7 +18,8 @@ import {
   DEFAULT_RCE_RATE,
   EXECUTIVES,
 } from "@/lib/constants";
-import { addDaysToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
+import { addDaysToDateOnly, addPeriodToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
+import { parseContractTerm, upsertContractTermText } from "@/lib/contract-term";
 import {
   normalizeCoverage,
   type CoverageSubamparo,
@@ -104,7 +105,8 @@ type ContractForm = {
   fecha_inicio: string;
   fecha_fin: string;
   fecha_fin_manual: boolean;
-  plazo_dias: string;
+  plazo_cantidad: string;
+  plazo_unidad: PeriodUnit;
   plazo: string;
   renovable_automaticamente: "si" | "no";
   origen_manual: boolean;
@@ -185,7 +187,8 @@ const emptyForm: ContractForm = {
   fecha_inicio: "",
   fecha_fin: "",
   fecha_fin_manual: false,
-  plazo_dias: "",
+  plazo_cantidad: "",
+  plazo_unidad: "dias",
   plazo: "",
   renovable_automaticamente: "no",
   origen_manual: false,
@@ -890,11 +893,26 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             asDate
           />
           <EditableField
-            label="Plazo en días"
-            type="number"
-            value={form.plazo_dias}
-            onChange={(value) => updateForm(setForm, "plazo_dias", value)}
+            label="Plazo"
+            type="text"
+            inputMode="numeric"
+            value={form.plazo_cantidad}
+            onChange={(value) => updateForm(setForm, "plazo_cantidad", value)}
           />
+          <label className="block space-y-2">
+            <span className="text-sm font-medium text-neutral-700">Unidad</span>
+            <select
+              value={form.plazo_unidad}
+              onChange={(event) =>
+                updateForm(setForm, "plazo_unidad", event.target.value)
+              }
+              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+            >
+              <option value="dias">Días</option>
+              <option value="meses">Meses</option>
+              <option value="anios">Años</option>
+            </select>
+          </label>
           <EditableField
             label="Fecha fin"
             value={form.fecha_fin}
@@ -2015,19 +2033,70 @@ function DateTextField({
   source?: SourceMeta;
   warning?: string | null;
 }) {
+  const pickerRef = useRef<HTMLInputElement>(null);
+
+  function openPicker() {
+    const picker = pickerRef.current;
+
+    if (!picker) {
+      return;
+    }
+
+    try {
+      picker.showPicker();
+    } catch {
+      picker.focus();
+    }
+  }
+
   return (
     <div className="space-y-2">
       <label className="block space-y-2">
         <span className="text-sm font-medium text-neutral-700">{label}</span>
-        <input
-          type="text"
-          inputMode="numeric"
-          autoComplete="off"
-          placeholder="DD/MM/YYYY"
-          value={formatDateInputValue(value)}
-          onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
-          className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-        />
+        <span className="relative block">
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="DD/MM/YYYY"
+            value={formatDateInputValue(value)}
+            onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
+            className="h-11 w-full rounded-lg border border-neutral-300 pl-3 pr-11 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+          />
+          <input
+            ref={pickerRef}
+            type="date"
+            tabIndex={-1}
+            aria-hidden="true"
+            value={normalizeDateValue(value) ?? ""}
+            onChange={(event) => {
+              if (event.target.value) {
+                onChange(event.target.value);
+              }
+            }}
+            className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
+          />
+          <button
+            type="button"
+            aria-label={`Abrir calendario: ${label}`}
+            onClick={openPicker}
+            className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-lg text-neutral-500 transition hover:text-[#d25b30] focus:outline-none focus-visible:ring-4 focus-visible:ring-[#d25b30]/15"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3.5" y="5" width="17" height="15.5" rx="2.5" />
+              <path d="M3.5 10h17M8 3v4M16 3v4" />
+            </svg>
+          </button>
+        </span>
         {warning ? (
           <span className="block text-xs font-medium leading-5 text-amber-700">
             {warning}
@@ -3061,7 +3130,7 @@ function contractToForm(
     extraction?.plazo?.valor ??
     extraction?.plazo?.fuente ??
     "";
-  const plazoDias = extractPlazoDias(plazoSource);
+  const plazoTerm = parseContractTerm(plazoSource);
   const fechaInicio = normalizeDateValue(contract.fecha_inicio) ?? "";
   const fechaFin = normalizeDateValue(contract.fecha_fin) ?? "";
 
@@ -3089,9 +3158,10 @@ function contractToForm(
     fecha_fin_manual: isLoadedContractEndManual(
       fechaInicio,
       fechaFin,
-      plazoDias,
+      plazoTerm,
     ),
-    plazo_dias: plazoDias === null ? "" : String(plazoDias),
+    plazo_cantidad: plazoTerm ? String(plazoTerm.cantidad) : "",
+    plazo_unidad: plazoTerm?.unidad ?? "dias",
     plazo: contract.plazo ?? "",
     renovable_automaticamente: contract.renovable_automaticamente ? "si" : "no",
     origen_manual: contract.origen === "manual",
@@ -3243,15 +3313,20 @@ function applyContractTimingUpdate(
   } as ContractForm;
 
   if (key === "plazo") {
-    const nextDays = extractPlazoDias(value);
+    const nextTerm = parseContractTerm(value);
 
-    if (nextDays !== null) {
-      next.plazo_dias = String(nextDays);
+    if (nextTerm) {
+      next.plazo_cantidad = String(nextTerm.cantidad);
+      next.plazo_unidad = nextTerm.unidad;
     }
   }
 
-  if (key === "plazo_dias") {
-    next.plazo = upsertPlazoDaysText(next.plazo, value);
+  if (key === "plazo_cantidad" || key === "plazo_unidad") {
+    next.plazo = upsertContractTermText(
+      next.plazo,
+      integerOrNull(next.plazo_cantidad),
+      next.plazo_unidad,
+    );
   }
 
   if (key === "fecha_fin") {
@@ -3261,7 +3336,12 @@ function applyContractTimingUpdate(
     };
   }
 
-  if (key === "fecha_inicio" || key === "plazo_dias" || key === "plazo") {
+  if (
+    key === "fecha_inicio" ||
+    key === "plazo_cantidad" ||
+    key === "plazo_unidad" ||
+    key === "plazo"
+  ) {
     return recalculateContractEndDate(next, false);
   }
 
@@ -3277,86 +3357,41 @@ function recalculateContractEndDate(
   }
 
   const startDate = normalizeDateValue(form.fecha_inicio);
-  const days = integerOrNull(form.plazo_dias);
+  const quantity = integerOrNull(form.plazo_cantidad);
 
-  if (!startDate || days === null || days <= 0) {
+  if (!startDate || quantity === null || quantity <= 0) {
     return force ? { ...form, fecha_fin_manual: false } : form;
   }
 
   return {
     ...form,
-    fecha_fin: addDaysToDate(startDate, days),
+    fecha_fin: addPeriodToDateOnly(startDate, quantity, form.plazo_unidad) ?? "",
     fecha_fin_manual: false,
   };
-}
-
-function extractPlazoDias(value: string | null | undefined) {
-  const text = normalizeTextValue(value);
-
-  if (!text) {
-    return null;
-  }
-
-  const normalized = normalizeForLooseMatch(text);
-  const parenthesizedDays = normalized.match(/\((\d+)\)\s*dias?\b/);
-
-  if (parenthesizedDays) {
-    return integerOrNull(parenthesizedDays[1]);
-  }
-
-  const numericDays = normalized.match(/\b(\d+)\s*dias?\b/);
-
-  if (numericDays) {
-    return integerOrNull(numericDays[1]);
-  }
-
-  if (normalized.includes("doscientos cuarenta")) {
-    return 240;
-  }
-
-  return null;
 }
 
 function isLoadedContractEndManual(
   startDate: string,
   endDate: string,
-  plazoDias: number | null,
+  term: ReturnType<typeof parseContractTerm>,
 ) {
-  if (!startDate || !endDate || plazoDias === null) {
+  if (!startDate || !endDate || term === null) {
     return false;
   }
 
-  return addDaysToDate(startDate, plazoDias) !== endDate;
+  return addPeriodToDateOnly(startDate, term.cantidad, term.unidad) !== endDate;
 }
 
 function addDaysToDate(date: string, days: number) {
   return addDaysToDateOnly(date, days) ?? "";
 }
 
-function upsertPlazoDaysText(current: string, daysValue: string) {
-  const days = integerOrNull(daysValue);
-
-  if (days === null || days <= 0) {
-    return current;
-  }
-
-  if (!current.trim()) {
-    return `${days} días`;
-  }
-
-  if (/\(\d+\)\s*d[ií]as?\b/i.test(current)) {
-    return current.replace(/\(\d+\)\s*d[ií]as?\b/i, `(${days}) días`);
-  }
-
-  if (/\b\d+\s*d[ií]as?\b/i.test(current)) {
-    return current.replace(/\b\d+\s*d[ií]as?\b/i, `${days} días`);
-  }
-
-  return `${current}; plazo calculable: ${days} días`;
-}
-
 function buildPersistedPlazo(form: ContractForm) {
-  return upsertPlazoDaysText(form.plazo, form.plazo_dias);
+  return upsertContractTermText(
+    form.plazo,
+    integerOrNull(form.plazo_cantidad),
+    form.plazo_unidad,
+  );
 }
 
 function contractDependsOnActaInicio(
