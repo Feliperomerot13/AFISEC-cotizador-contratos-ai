@@ -11,6 +11,7 @@ import {
   type AmendmentLiquidation,
   type AmendmentQuoteSnapshot,
 } from "@/lib/amendments";
+import { isCivilLiabilityName } from "@/lib/coverage-policy";
 import { addDaysToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
 import type {
   Amparo,
@@ -1369,10 +1370,10 @@ function getBasePolicyUiIssues(
   }
 
   const snapshotRce = snapshot.amparos.filter((coverage) =>
-    isCivilLiabilityCoverageKey(coverage.tipo_amparo),
+    isCivilLiabilityName(coverage.tipo_amparo),
   );
   const liveRce = baseAmparos.filter((coverage) =>
-    isCivilLiabilityCoverageKey(coverage.tipo_amparo),
+    isCivilLiabilityName(coverage.tipo_amparo),
   );
 
   if (snapshotRce.length > 0 || liveRce.length > 0) {
@@ -1405,17 +1406,6 @@ function getBasePolicyUiIssues(
 
 function hasPositiveNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function isCivilLiabilityCoverageKey(value: string) {
-  const normalized = normalizeCoverageKey(value);
-
-  return (
-    normalized.includes("responsabilidad_civil") ||
-    normalized.includes("extracontractual") ||
-    normalized.includes("rce") ||
-    normalized.includes("plo")
-  );
 }
 
 function historyTypeLabel(status: string) {

@@ -8,6 +8,7 @@ import {
   normalizeNumber,
   normalizeText,
 } from "@/lib/normalizers";
+import { normalizePeriodUnit } from "@/lib/spanish-dates";
 
 const confidenceSchema = z.enum(["alta", "media", "baja"]);
 const coverageValidityTypeSchema = z.enum(["contractual", "post_contractual"]);
@@ -83,6 +84,13 @@ const sourcedDateSchema = z
   })
   .strict();
 
+const additionalPeriodSchema = z
+  .object({
+    cantidad: z.number().int().nonnegative().nullable(),
+    unidad: z.enum(["dias", "meses", "anios"]).nullable(),
+  })
+  .strict();
+
 const guaranteeSchema = z
   .object({
     tipo_amparo: z.string().min(1),
@@ -92,6 +100,10 @@ const guaranteeSchema = z
     tipo_vigencia: coverageValidityTypeSchema.nullable(),
     base_vigencia: coverageValidityBaseSchema.nullable(),
     dias_adicionales: z.number().int().nonnegative().nullable(),
+    periodo_adicional: additionalPeriodSchema.default({
+      cantidad: null,
+      unidad: null,
+    }),
     fecha_desde: dateSchema,
     fecha_hasta: dateSchema,
     fuente_texto: sourceSchema,
@@ -308,6 +320,10 @@ const nullableBoolean = z.preprocess((value) => {
   return normalizeBoolean(value, false);
 }, z.boolean().nullable());
 
+const nullablePeriodUnit = z.preprocess((value) => {
+  return normalizePeriodUnit(value);
+}, z.enum(["dias", "meses", "anios"]).nullable());
+
 const currencyString = z.preprocess((value) => {
   return normalizeCurrency(value);
 }, z.string().min(1));
@@ -337,6 +353,23 @@ export const uploadFormSchema = z.object({
   ejecutivo: z.enum(EXECUTIVES),
   tipoDocumento: z.enum(DOCUMENT_TYPES),
   contratoBaseId: z.string().regex(/^\d+$/).optional(),
+});
+
+export const newQuoteSchema = z.object({
+  nombreCliente: requiredTrimmedString(
+    2,
+    "El nombre del tomador es obligatorio.",
+  ),
+  nitCliente: requiredTrimmedString(3, "El NIT del tomador es obligatorio."),
+  ejecutivo: z.enum(EXECUTIVES),
+  contratante: requiredTrimmedString(
+    2,
+    "El asegurado / contratante es obligatorio.",
+  ),
+  numero_contrato: z
+    .string()
+    .nullish()
+    .transform((value) => normalizeText(value)),
 });
 
 export const validateContractSchema = z.object({
@@ -387,6 +420,8 @@ export const validateContractSchema = z.object({
       fecha_hasta: nullableDateString,
       fecha_hasta_manual: z.boolean().default(false),
       dias_adicionales: nullableInteger,
+      periodo_adicional_cantidad: nullableInteger,
+      periodo_adicional_unidad: nullablePeriodUnit,
       fuente_pagina: nullableInteger,
       fuente_texto: emptyToNullString,
       confianza: confidenceSchema.nullable(),

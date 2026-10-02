@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import {
+  FilePlus2,
   FileText,
   LayoutDashboard,
   Menu,
@@ -31,6 +32,13 @@ const NAV_ITEMS: NavItem[] = [
     title: "Inicio",
     icon: LayoutDashboard,
     match: (pathname) => pathname === "/",
+  },
+  {
+    href: "/cotizaciones/nueva",
+    label: "Nueva cotización",
+    title: "Nueva cotización",
+    icon: FilePlus2,
+    match: (pathname) => pathname.startsWith("/cotizaciones"),
   },
   {
     href: "/upload",

@@ -3,12 +3,18 @@ import {
   DEFAULT_IVA_PERCENTAGE,
   DEFAULT_RCE_RATE,
 } from "@/lib/constants";
+import { isCivilLiabilityCoverage } from "@/lib/coverage-policy";
 import {
-  addDaysToDateOnly,
+  addPeriodToDateOnly,
   diffDaysDateOnly,
 } from "@/lib/date-only";
 import { normalizeDate, normalizeNumber, normalizeText } from "@/lib/normalizers";
 import type { AIConfidence, AIExtraction } from "@/lib/schemas";
+import {
+  findAdditionalPeriod,
+  normalizePeriodUnit,
+  type PeriodUnit,
+} from "@/lib/spanish-dates";
 
 type CoverageValidityBase =
   | "fecha_inicio_contrato"
@@ -29,6 +35,8 @@ export type ContractCoverageContext = {
   anticipoBaseIncluyeIva?: boolean | null;
   fechaInicio: string | null;
   fechaFin: string | null;
+  // Nueva cotización sin documento: no hay fuente textual ni extracción que evaluar.
+  origenManual?: boolean;
 };
 
 export type CoverageCalculationInput = Partial<AIExtraction["garantias"][number]> & {
@@ -46,6 +54,9 @@ export type CoverageCalculationInput = Partial<AIExtraction["garantias"][number]
   anticipo_base_incluye_iva?: boolean | null;
   fecha_desde_manual?: boolean | null;
   fecha_hasta_manual?: boolean | null;
+  // Periodo adicional con unidad; si falta, se interpreta dias_adicionales como días.
+  periodo_adicional_cantidad?: number | null;
+  periodo_adicional_unidad?: PeriodUnit | null;
   subamparos?: CoverageSubamparo[] | null;
 };
 
@@ -85,6 +96,8 @@ export type NormalizedCoverage = {
   fecha_hasta: string | null;
   fecha_hasta_manual: boolean;
   dias_adicionales: number | null;
+  periodo_adicional_cantidad: number | null;
+  periodo_adicional_unidad: PeriodUnit | null;
   fuente_pagina: number | null;
   fuente_texto: string | null;
   subamparos: CoverageSubamparo[];
@@ -134,6 +147,7 @@ export function normalizeCoverage(
     manualEndDateEnabled,
   );
   const validityDays = calculateValidityDays(startsAt, endsAt, reasons);
+  const additionalPeriod = resolveAdditionalPeriod(preparedCoverage);
   const baseVigencia = resolveCoverageValidityBase(
     preparedCoverage,
     contract,
@@ -179,8 +193,27 @@ export function normalizeCoverage(
           }
       : automaticPremium;
 
-  if (preparedCoverage.confianza === "baja") {
+  if (preparedCoverage.confianza === "baja" && !contract.origenManual) {
     reasons.add("Confianza baja en la extracción.");
+  }
+
+  const periodTakenFromText =
+    !readExplicitPeriod(coverage) && readExplicitPeriod(preparedCoverage) !== null;
+
+  if (
+    additionalPeriod?.habiles ||
+    (periodTakenFromText &&
+      findAdditionalPeriod(preparedCoverage.fuente_texto)?.habiles)
+  ) {
+    reasons.add(
+      "El periodo adicional está expresado en días hábiles; el sistema calcula días calendario. Revíselo manualmente.",
+    );
+  }
+
+  if (normalizeNumber(coverage.dias_adicionales) === 0 && periodTakenFromText) {
+    reasons.add(
+      "El periodo adicional se tomó del texto de la cláusula porque no se recibió un valor. Verifíquelo.",
+    );
   }
 
   if (
@@ -211,7 +244,7 @@ export function normalizeCoverage(
     );
   }
 
-  if (isAmbiguousSource(preparedCoverage.fuente_texto)) {
+  if (!contract.origenManual && isAmbiguousSource(preparedCoverage.fuente_texto)) {
     reasons.add("La fuente textual es insuficiente o ambigua.");
   }
 
@@ -262,7 +295,13 @@ export function normalizeCoverage(
     fecha_desde_manual: manualStartDateEnabled,
     fecha_hasta: endsAt,
     fecha_hasta_manual: manualEndDateEnabled,
-    dias_adicionales: getEffectiveAdditionalDays(preparedCoverage),
+    dias_adicionales: resolveAdditionalDays(
+      additionalPeriod,
+      preparedCoverage,
+      contract,
+    ),
+    periodo_adicional_cantidad: additionalPeriod?.cantidad ?? null,
+    periodo_adicional_unidad: additionalPeriod?.unidad ?? null,
     fuente_pagina: preparedCoverage.fuente_pagina ?? null,
     fuente_texto: preparedCoverage.fuente_texto ?? null,
     subamparos,
@@ -441,9 +480,12 @@ function normalizeContractualTermCoverageInput(
     return coverage;
   }
 
-  const additionalDays =
-    normalizeNumber(coverage.dias_adicionales) ??
-    extractPostContractualDays(coverage.fuente_texto);
+  const additionalDays = normalizeNumber(coverage.dias_adicionales);
+  const textPeriod =
+    !readExplicitPeriod(coverage) &&
+    (additionalDays === null || additionalDays === 0)
+      ? findAdditionalPeriod(coverage.fuente_texto)
+      : null;
   const baseVigencia = coverageTextIncludes(coverage, ["acta de recibo final"])
     ? "acta_recibo_final"
     : "fecha_fin_contrato";
@@ -453,6 +495,12 @@ function normalizeContractualTermCoverageInput(
     tipo_vigencia: "contractual",
     base_vigencia: baseVigencia,
     dias_adicionales: additionalDays,
+    ...(textPeriod
+      ? {
+          periodo_adicional_cantidad: textPeriod.cantidad,
+          periodo_adicional_unidad: textPeriod.unidad,
+        }
+      : {}),
   };
 }
 
@@ -956,17 +1004,17 @@ function calculateEndDate(
     return explicitEndDate;
   }
 
-  const additionalDays = getEffectiveAdditionalDays(coverage);
+  const additionalPeriod = resolveAdditionalPeriod(coverage);
   const endBaseDate = resolveCoverageEndBaseDate(coverage, contract, reasons);
 
   if (endBaseDate !== null) {
-    return addDays(endBaseDate, additionalDays ?? 0);
+    return addPeriod(endBaseDate, additionalPeriod);
   }
 
   if (
     coverage.tipo_vigencia === "contractual" ||
     coverage.tipo_vigencia === "post_contractual" ||
-    additionalDays !== null
+    additionalPeriod !== null
   ) {
     reasons.add("Falta fecha fin del contrato para calcular fecha hasta.");
     return null;
@@ -1124,87 +1172,95 @@ function calculatePremiumFromNet({
   };
 }
 
-function getEffectiveAdditionalDays(coverage: CoverageInput) {
+type AdditionalPeriod = {
+  cantidad: number;
+  unidad: PeriodUnit;
+  habiles: boolean;
+};
+
+function readExplicitPeriod(coverage: CoverageInput): AdditionalPeriod | null {
+  const unit = normalizePeriodUnit(coverage.periodo_adicional_unidad);
+  const quantity = normalizeNumber(coverage.periodo_adicional_cantidad);
+
+  if (unit === null || quantity === null || quantity < 0) {
+    return null;
+  }
+
+  return { cantidad: Math.trunc(quantity), unidad: unit, habiles: false };
+}
+
+// Periodo adicional efectivo: explícito (cantidad + unidad), días heredados o regla por tipo de amparo.
+function resolveAdditionalPeriod(coverage: CoverageInput): AdditionalPeriod | null {
+  const explicit = readExplicitPeriod(coverage);
+
+  if (explicit) {
+    return explicit;
+  }
+
   const additionalDays = normalizeNumber(coverage.dias_adicionales);
 
   if (additionalDays !== null) {
-    return Math.trunc(additionalDays);
+    return { cantidad: Math.trunc(additionalDays), unidad: "dias", habiles: false };
   }
 
   if (isPayrollCoverage(coverage.tipo_amparo, coverage.fuente_texto)) {
-    return 1095;
+    return { cantidad: 1095, unidad: "dias", habiles: false };
   }
 
   if (isClosureBasedPostContractualCoverage(coverage)) {
-    return extractPostContractualDays(coverage.fuente_texto) ?? 30;
+    const fromText = findAdditionalPeriod(coverage.fuente_texto);
+
+    return fromText
+      ? {
+          cantidad: fromText.cantidad,
+          unidad: fromText.unidad,
+          habiles: fromText.habiles,
+        }
+      : { cantidad: 30, unidad: "dias", habiles: false };
   }
 
   if (coverage.tipo_vigencia === "contractual") {
-    return 0;
+    return { cantidad: 0, unidad: "dias", habiles: false };
   }
 
   if (isContractEndBasedCoverage(coverage)) {
-    return 30;
+    return { cantidad: 30, unidad: "dias", habiles: false };
   }
 
   if (coverage.tipo_vigencia === "post_contractual") {
-    return 0;
+    return { cantidad: 0, unidad: "dias", habiles: false };
   }
 
   return null;
 }
 
-function extractPostContractualDays(source: string | null | undefined) {
-  const normalized = normalizeBaseValue(source);
+function addPeriod(date: string, period: AdditionalPeriod | null) {
+  if (!period) {
+    return date;
+  }
 
-  if (!normalized) {
+  return addPeriodToDateOnly(date, period.cantidad, period.unidad) ?? date;
+}
+
+// Días equivalentes del periodo contra la fecha base; se conserva en dias_adicionales por compatibilidad.
+function resolveAdditionalDays(
+  period: AdditionalPeriod | null,
+  coverage: CoverageInput,
+  contract: ContractCoverageContext,
+) {
+  if (!period) {
     return null;
   }
 
-  const numericDays =
-    normalized.match(/\((\d+)\)\s*dias?/) ??
-    normalized.match(/(\d+)\s*dias?/);
-
-  if (numericDays) {
-    const days = normalizeNumber(numericDays[1]);
-    return days === null ? null : Math.trunc(days);
+  if (period.unidad === "dias") {
+    return period.cantidad;
   }
 
-  const numericYears =
-    normalized.match(/\((\d+)\)\s*anos?/) ??
-    normalized.match(/(\d+)\s*anos?/);
+  const base = resolveCoverageEndBaseDate(coverage, contract, new Set<string>());
 
-  if (numericYears) {
-    const years = normalizeNumber(numericYears[1]);
-    return years === null ? null : Math.trunc(years * 365);
-  }
-
-  const numericMonths =
-    normalized.match(/\((\d+)\)\s*mes(?:es)?/) ??
-    normalized.match(/(\d+)\s*mes(?:es)?/);
-
-  if (numericMonths) {
-    const months = normalizeNumber(numericMonths[1]);
-    return months === null ? null : Math.trunc(months * 30);
-  }
-
-  if (
-    normalized.includes("un ano") ||
-    normalized.includes("un (1) ano") ||
-    normalized.includes("uno (1) ano")
-  ) {
-    return 365;
-  }
-
-  if (normalized.includes("tres anos") || normalized.includes("tres (3) anos")) {
-    return 1095;
-  }
-
-  if (normalized.includes("tres meses") || normalized.includes("tres (3) meses")) {
-    return 90;
-  }
-
-  return null;
+  return base === null
+    ? null
+    : diffDaysDateOnly(base, addPeriod(base, period));
 }
 
 function resolveCoverageValidityBase(
@@ -1442,10 +1498,6 @@ function normalizeBaseValue(value: string | null | undefined) {
     .toLowerCase();
 }
 
-function addDays(date: string, days: number) {
-  return addDaysToDateOnly(date, days) ?? date;
-}
-
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -1461,30 +1513,6 @@ function hasPerUnitCondition(source: string | null | undefined) {
     "cada empleado",
     "cada persona",
   ].some((marker) => normalized.includes(marker));
-}
-
-function isCivilLiabilityCoverage(
-  type: string | null | undefined,
-  source: string | null | undefined,
-) {
-  const text = (normalizeText(`${type ?? ""} ${source ?? ""}`) ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-
-  return (
-    text.includes("responsabilidad civil") ||
-    text.includes("extracontractual") ||
-    text.includes("predios") ||
-    text.includes("labores") ||
-    text.includes("operaciones") ||
-    text.includes("plo") ||
-    text.includes("patronal") ||
-    text.includes("civil cruzada") ||
-    text.includes("vehiculos propios") ||
-    text.includes("vehiculos no propios") ||
-    text.includes("subcontrat")
-  );
 }
 
 function extractCurrencyAmount(source: string | null | undefined) {

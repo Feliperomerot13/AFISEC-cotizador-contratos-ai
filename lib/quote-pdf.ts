@@ -1,13 +1,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
+import { createTableEngine, type PdfTableCell } from "@/lib/pdf/table";
+import { toPdfText } from "@/lib/pdf/text";
 import {
-  calculateQuoteTotalsByBlock,
   formatCoverageName,
   getQuoteCommercialIssues,
-  isCivilLiabilityCoverageType,
+  groupQuoteCoveragesByPolicy,
+  type QuotePolicyGroup,
   type QuoteSnapshot,
-  type QuoteSnapshotSubcoverage,
+  type QuoteSnapshotCoverage,
 } from "@/lib/quotes";
 
 type QuotePdfInput = {
@@ -28,15 +30,6 @@ type PdfImage = {
 };
 
 type PdfObjectBody = string | Buffer | Array<string | Buffer>;
-
-type PdfTableCell = {
-  text: string;
-  width: number;
-  align?: "left" | "right" | "center";
-  bold?: boolean;
-  fill?: string;
-  color?: string;
-};
 
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
@@ -85,6 +78,17 @@ export function generateQuotePdf({
       newPage();
     }
   }
+
+  const { addTableRows, getRowHeight } = createTableEngine({
+    page,
+    newPage,
+    marginX: MARGIN_X,
+    topY: TOP_Y,
+    bottomY: BOTTOM_Y,
+    border: TABLE_BORDER,
+    borderWidth: 0.4,
+    textTop: 6,
+  });
 
   function addHeader() {
     ensureSpace(96);
@@ -160,51 +164,56 @@ export function generateQuotePdf({
     addTableRows(
       [
         [
-          { text: "Cliente", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.nombre, width: 196 },
-          { text: "NIT", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.nit, width: 196 },
+          { text: "Tomador", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.nombre, width: 186 },
+          { text: "NIT", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.nit, width: 186 },
         ],
         [
-          { text: "Ejecutiva", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.cliente.ejecutivo, width: 196 },
-          { text: "Contrato / orden", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.numero_contrato ?? "Sin número", width: 196 },
+          { text: "Ejecutiva", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.cliente.ejecutivo, width: 186 },
+          { text: "Contrato / orden", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.numero_contrato ?? "Sin número", width: 186 },
         ],
         [
-          { text: "Contratante", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.contratante ?? "Sin dato", width: 196 },
-          { text: "Contratista", width: 76, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.contratista ?? "Sin dato", width: 196 },
+          {
+            text: "Asegurado / contratante",
+            width: 84,
+            bold: true,
+            fill: TABLE_HEADER,
+          },
+          { text: snapshot.contrato.contratante ?? "Sin dato", width: 186 },
+          { text: "Contratista", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.contratista ?? "Sin dato", width: 186 },
         ],
         [
-          { text: "Valor base", width: 72, bold: true, fill: TABLE_HEADER },
+          { text: "Valor base", width: 84, bold: true, fill: TABLE_HEADER },
           {
             text: formatMoney(
               snapshot.contrato.base_calculo_amparos ??
                 snapshot.contrato.valor_contrato,
               snapshot.contrato.moneda,
             ),
-            width: 196,
+            width: 186,
           },
-          { text: "Base incluye IVA", width: 76, bold: true, fill: TABLE_HEADER },
+          { text: "Base incluye IVA", width: 84, bold: true, fill: TABLE_HEADER },
           {
             text: getBaseIncludesIvaLabel(
               snapshot.contrato.base_calculo_incluye_iva,
             ),
-            width: 196,
+            width: 186,
           },
         ],
         [
-          { text: "Vigencia general", width: 72, bold: true, fill: TABLE_HEADER },
+          { text: "Vigencia general", width: 84, bold: true, fill: TABLE_HEADER },
           {
             text: `${formatDate(snapshot.contrato.fecha_inicio)} a ${formatDate(snapshot.contrato.fecha_fin)}`,
-            width: 468,
+            width: 456,
           },
         ],
         [
-          { text: "Objeto resumido", width: 72, bold: true, fill: TABLE_HEADER },
-          { text: snapshot.contrato.objeto ?? "Sin dato", width: 468 },
+          { text: "Objeto resumido", width: 84, bold: true, fill: TABLE_HEADER },
+          { text: snapshot.contrato.objeto ?? "Sin dato", width: 456 },
         ],
       ],
       {
@@ -213,217 +222,150 @@ export function generateQuotePdf({
         minHeight: 18,
       },
     );
-    page().y -= 12;
+    page().y -= 18;
   }
 
-  function addCoverageTable() {
-    addSectionTitle("Amparos cotizados");
+  const coverageHeader: PdfTableCell[] = [
+    { text: "Amparo", width: 150, bold: true, fill: TABLE_HEADER },
+    { text: "Valor asegurado", width: 82, bold: true, fill: TABLE_HEADER, align: "right" },
+    { text: "Desde", width: 42, bold: true, fill: TABLE_HEADER },
+    { text: "Hasta", width: 42, bold: true, fill: TABLE_HEADER },
+    { text: "Días", width: 28, bold: true, fill: TABLE_HEADER, align: "right" },
+    { text: "Prima neta", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
+    { text: "IVA", width: 56, bold: true, fill: TABLE_HEADER, align: "right" },
+    { text: "Prima total", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
+  ];
+  const headerStyle = { fontSize: 7, lineHeight: 8.5, minHeight: 20 };
+  const rowStyle = { fontSize: 6.4, lineHeight: 8.2, minHeight: 24 };
 
-    const header: PdfTableCell[] = [
-      { text: "Amparo", width: 150, bold: true, fill: TABLE_HEADER },
+  function buildCoverageRow(amparo: QuoteSnapshotCoverage): PdfTableCell[] {
+    const currency = snapshot.contrato.moneda;
+
+    return [
+      { text: formatCoverageName(amparo.tipo_amparo), width: 150 },
+      { text: formatMoney(amparo.valor_asegurado, currency), width: 82, align: "right" },
+      { text: formatCompactDate(amparo.fecha_desde), width: 42, nowrap: true },
+      { text: formatCompactDate(amparo.fecha_hasta), width: 42, nowrap: true },
       {
-        text: "Valor asegurado",
-        width: 82,
-        bold: true,
-        fill: TABLE_HEADER,
-      },
-      { text: "Desde", width: 42, bold: true, fill: TABLE_HEADER },
-      { text: "Hasta", width: 42, bold: true, fill: TABLE_HEADER },
-      { text: "Días", width: 28, bold: true, fill: TABLE_HEADER, align: "right" },
-      {
-        text: "Prima neta",
-        width: 70,
-        bold: true,
-        fill: TABLE_HEADER,
+        text: amparo.dias_vigencia === null ? "Sin dato" : String(amparo.dias_vigencia),
+        width: 28,
         align: "right",
       },
-      { text: "IVA", width: 56, bold: true, fill: TABLE_HEADER, align: "right" },
-      {
-        text: "Prima total",
-        width: 70,
-        bold: true,
-        fill: TABLE_HEADER,
-        align: "right",
-      },
+      { text: formatMoney(amparo.prima_neta, currency), width: 70, align: "right" },
+      { text: formatMoney(amparo.iva, currency), width: 56, align: "right" },
+      { text: formatMoney(amparo.prima_total, currency), width: 70, align: "right" },
     ];
+  }
 
-    addTableRows([header], {
-      fontSize: 7,
-      lineHeight: 8.5,
-      minHeight: 20,
+  function addCoverageRows(amparos: QuoteSnapshotCoverage[]) {
+    amparos.forEach((amparo) => {
+      const row = buildCoverageRow(amparo);
+
+      if (page().y - getRowHeight(row, rowStyle.fontSize, rowStyle.lineHeight, rowStyle.minHeight) < BOTTOM_Y) {
+        newPage();
+        addTableRows([coverageHeader], headerStyle);
+      }
+
+      addTableRows([row], rowStyle);
     });
+  }
 
-    if (snapshot.amparos.length === 0) {
-      addTableRows(
-        [[{ text: "No se registran amparos cotizados.", width: CONTENT_WIDTH }]],
-        {
-          fontSize: 7.5,
-          lineHeight: 9,
-          minHeight: 20,
-        },
-      );
-      page().y -= 12;
+  function addSubcoverageBlock(amparos: QuoteSnapshotCoverage[]) {
+    const subcoverages = amparos.flatMap((amparo) =>
+      amparo.subamparos.filter((subamparo) => subamparo.incluido),
+    );
+
+    if (subcoverages.length === 0) {
       return;
     }
 
-    snapshot.amparos.forEach((amparo) => {
-      const row: PdfTableCell[] = [
-        { text: formatCoverageName(amparo.tipo_amparo), width: 150 },
-        {
-          text: formatMoney(amparo.valor_asegurado, snapshot.contrato.moneda),
-          width: 82,
-          align: "right",
-        },
-        { text: formatCompactDate(amparo.fecha_desde), width: 42 },
-        { text: formatCompactDate(amparo.fecha_hasta), width: 42 },
-        {
-          text:
-            amparo.dias_vigencia === null
-              ? "Sin dato"
-              : String(amparo.dias_vigencia),
-          width: 28,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.prima_neta, snapshot.contrato.moneda),
-          width: 70,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.iva, snapshot.contrato.moneda),
-          width: 56,
-          align: "right",
-        },
-        {
-          text: formatMoney(amparo.prima_total, snapshot.contrato.moneda),
-          width: 70,
-          align: "right",
-        },
-      ];
-      const rowHeight = getRowHeight(row, 6.4, 8.2, 24);
+    const indent = 14;
+    const currency = snapshot.contrato.moneda;
+    const subHeader: PdfTableCell[] = [
+      { text: "Subamparos incluidos", width: 222, bold: true, fill: TABLE_HEADER },
+      { text: "% sublímite", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Valor sublímite", width: 110, bold: true, fill: TABLE_HEADER, align: "right" },
+      { text: "Prima", width: 124, bold: true, fill: TABLE_HEADER },
+    ];
 
-      if (page().y - rowHeight < BOTTOM_Y) {
-        newPage();
-        addTableRows([header], {
-          fontSize: 7,
-          lineHeight: 8.5,
-          minHeight: 20,
-        });
-      }
-
-      addTableRows([row], {
-        fontSize: 6.4,
-        lineHeight: 8.2,
-        minHeight: 24,
-      });
-
-      if (
-        isCivilLiabilityCoverageType(amparo.tipo_amparo) &&
-        amparo.subamparos.some((subamparo) => subamparo.incluido)
-      ) {
-        addTableRows(
-          [
-            [
-              {
-                text: `Subamparos RCE incluidos: ${formatRceSubcoverages(amparo.subamparos, snapshot.contrato.moneda)}. Sin prima individual; la prima corresponde a la línea principal RCE/PLO.`,
-                width: CONTENT_WIDTH,
-                fill: SOFT_FILL,
-                color: AFISEC_GRAY,
-              },
-            ],
-          ],
+    addTableRows(
+      [
+        subHeader,
+        ...subcoverages.map((subamparo): PdfTableCell[] => [
+          { text: subamparo.nombre, width: 222 },
+          { text: formatSublimitPercent(subamparo.porcentaje_sublimite), width: 70, align: "right" },
+          { text: formatMoney(subamparo.valor_sublimite, currency), width: 110, align: "right" },
           {
-            fontSize: 6.4,
-            lineHeight: 8.2,
-            minHeight: 18,
+            text: subamparo.calculable ? "Línea principal" : "Sin prima individual",
+            width: 124,
+            color: subamparo.calculable ? undefined : AFISEC_GRAY,
           },
-        );
-      }
-    });
-
-    page().y -= 12;
-  }
-
-  function addTotalsTable() {
-    const totalsByBlock = calculateQuoteTotalsByBlock(snapshot.amparos);
-
-    ensureSpace(112);
-    addSectionTitle("Totales");
+        ]),
+      ],
+      { x: MARGIN_X + indent, ...rowStyle, minHeight: 16, keepTogether: true },
+    );
     addTableRows(
       [
         [
-          { text: "Bloque", width: 125, bold: true, fill: TABLE_HEADER },
-          { text: "Prima neta", width: 90, bold: true, fill: TABLE_HEADER, align: "right" },
-          { text: "IVA", width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
-          { text: "Total", width: 95, bold: true, fill: TABLE_HEADER, align: "right" },
-        ],
-        [
-          { text: "Total garantías / cumplimiento", width: 125, bold: true },
           {
-            text: formatMoney(totalsByBlock.garantias.prima_neta, snapshot.contrato.moneda),
-            width: 90,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.garantias.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.garantias.prima_total, snapshot.contrato.moneda),
-            width: 95,
-            align: "right",
-          },
-        ],
-        [
-          { text: "Total responsabilidad civil", width: 125, bold: true },
-          {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.prima_neta, snapshot.contrato.moneda),
-            width: 90,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-          },
-          {
-            text: formatMoney(totalsByBlock.responsabilidad_civil.prima_total, snapshot.contrato.moneda),
-            width: 95,
-            align: "right",
-          },
-        ],
-        [
-          { text: "Total general", width: 125, bold: true, fill: TABLE_HEADER },
-          {
-            text: formatMoney(totalsByBlock.general.prima_neta, snapshot.contrato.moneda),
-            width: 90,
-            align: "right",
-            bold: true,
-          },
-          {
-            text: formatMoney(totalsByBlock.general.iva, snapshot.contrato.moneda),
-            width: 70,
-            align: "right",
-            bold: true,
-          },
-          {
-            text: formatMoney(totalsByBlock.general.prima_total, snapshot.contrato.moneda),
-            width: 95,
-            align: "right",
-            bold: true,
-            color: AFISEC_PRIMARY,
+            text: "La prima de esta póliza corresponde a la línea principal RCE/PLO; los subamparos no generan prima individual.",
+            width: CONTENT_WIDTH - indent,
+            fill: SOFT_FILL,
+            color: AFISEC_GRAY,
           },
         ],
       ],
-      {
-        x: PAGE_WIDTH - MARGIN_X - 380,
-        fontSize: 8,
-        lineHeight: 10,
-        minHeight: 20,
-      },
+      { x: MARGIN_X + indent, ...rowStyle, minHeight: 16 },
     );
-    page().y -= 10;
+  }
+
+  function addPolicyTotal(group: QuotePolicyGroup) {
+    const currency = snapshot.contrato.moneda;
+    const label = `Total ${group.nombre.charAt(0).toLowerCase()}${group.nombre.slice(1)}`;
+
+    addTableRows(
+      [
+        [
+          { text: label, width: 344, bold: true, fill: TABLE_HEADER },
+          { text: formatMoney(group.totales.prima_neta, currency), width: 70, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: formatMoney(group.totales.iva, currency), width: 56, bold: true, fill: TABLE_HEADER, align: "right" },
+          { text: formatMoney(group.totales.prima_total, currency), width: 70, bold: true, fill: TABLE_HEADER, align: "right", color: AFISEC_PRIMARY },
+        ],
+      ],
+      { fontSize: 7.5, lineHeight: 9, minHeight: 20, keepTogether: true },
+    );
+  }
+
+  function addPolicySection(group: QuotePolicyGroup) {
+    const firstRow = buildCoverageRow(group.amparos[0]);
+
+    ensureSpace(
+      14 +
+        20 +
+        getRowHeight(firstRow, rowStyle.fontSize, rowStyle.lineHeight, rowStyle.minHeight),
+    );
+    addSectionTitle(group.nombre.toUpperCase());
+    addTableRows([coverageHeader], headerStyle);
+    addCoverageRows(group.amparos);
+    addSubcoverageBlock(group.amparos);
+    addPolicyTotal(group);
+    page().y -= 18;
+  }
+
+  function addPolicies() {
+    const groups = groupQuoteCoveragesByPolicy(snapshot.amparos);
+
+    if (groups.length === 0) {
+      addSectionTitle("Amparos cotizados");
+      addTableRows(
+        [[{ text: "No se registran amparos cotizados.", width: CONTENT_WIDTH }]],
+        { fontSize: 7.5, lineHeight: 9, minHeight: 20 },
+      );
+      page().y -= 18;
+      return;
+    }
+
+    groups.forEach(addPolicySection);
   }
 
   function addCommercialNotes() {
@@ -441,141 +383,6 @@ export function generateQuotePdf({
     );
   }
 
-  function addTableRows(
-    rows: PdfTableCell[][],
-    options: {
-      x?: number;
-      y?: number;
-      fontSize: number;
-      lineHeight: number;
-      minHeight: number;
-    },
-  ) {
-    let y = options.y ?? page().y;
-
-    rows.forEach((row) => {
-      const rowHeight = getRowHeight(
-        row,
-        options.fontSize,
-        options.lineHeight,
-        options.minHeight,
-      );
-
-      if (typeof options.y !== "number" && page().y - rowHeight < BOTTOM_Y) {
-        newPage();
-        y = page().y;
-      }
-
-      drawTableRow(row, {
-        x: options.x ?? MARGIN_X,
-        y,
-        height: rowHeight,
-        fontSize: options.fontSize,
-        lineHeight: options.lineHeight,
-      });
-
-      y -= rowHeight;
-
-      if (typeof options.y !== "number") {
-        page().y -= rowHeight;
-      }
-    });
-  }
-
-  function drawTableRow(
-    row: PdfTableCell[],
-    options: {
-      x: number;
-      y: number;
-      height: number;
-      fontSize: number;
-      lineHeight: number;
-    },
-  ) {
-    let x = options.x;
-
-    row.forEach((cell) => {
-      const fill = cell.fill ?? "1 1 1";
-
-      page().commands.push(
-        `${fill} rg ${x} ${options.y - options.height} ${cell.width} ${options.height} re f`,
-        `${TABLE_BORDER} RG 0.4 w ${x} ${options.y - options.height} ${cell.width} ${options.height} re S`,
-      );
-
-      x += cell.width;
-    });
-
-    x = options.x;
-
-    row.forEach((cell) => {
-      const lines = getCellLines(cell.text, cell.width, options.fontSize);
-      const maxLines = Math.max(
-        1,
-        Math.floor((options.height - 6) / options.lineHeight),
-      );
-
-      lines.slice(0, maxLines).forEach((line, lineIndex) => {
-        const textWidth = estimateTextWidth(line, options.fontSize);
-        const textX = getAlignedTextX(
-          x,
-          cell.width,
-          textWidth,
-          cell.align ?? "left",
-        );
-        const textY =
-          options.y - 6 - options.fontSize - lineIndex * options.lineHeight;
-
-        page().commands.push(
-          `${cell.color ?? "0 0 0"} rg BT /${cell.bold ? "F2" : "F1"} ${options.fontSize} Tf 1 0 0 1 ${textX} ${textY} Tm ${toPdfText(line)} Tj ET`,
-        );
-      });
-
-      x += cell.width;
-    });
-  }
-
-  function getRowHeight(
-    row: PdfTableCell[],
-    fontSize: number,
-    lineHeight: number,
-    minHeight: number,
-  ) {
-    const lineCount = Math.max(
-      ...row.map((cell) => getCellLines(cell.text, cell.width, fontSize).length),
-      1,
-    );
-
-    return Math.max(minHeight, 8 + lineCount * lineHeight);
-  }
-
-  function getCellLines(text: string, width: number, fontSize: number) {
-    return wrapTextToWidth(text, Math.max(8, width - 8), fontSize);
-  }
-
-  function getAlignedTextX(
-    x: number,
-    width: number,
-    textWidth: number,
-    align: "left" | "right" | "center",
-  ) {
-    if (align === "right") {
-      return x + width - textWidth - 4;
-    }
-
-    if (align === "center") {
-      return x + (width - textWidth) / 2;
-    }
-
-    return x + 4;
-  }
-
-  function estimateTextWidth(text: string, fontSize: number) {
-    return Array.from(text).reduce(
-      (total, char) => total + getApproxCharWidth(char, fontSize),
-      0,
-    );
-  }
-
   function getBaseIncludesIvaLabel(value: boolean | null) {
     if (value === null) {
       return "No determinado";
@@ -584,28 +391,10 @@ export function generateQuotePdf({
     return value ? "Sí" : "No";
   }
 
-  function formatRceSubcoverages(
-    subcoverages: QuoteSnapshotSubcoverage[],
-    currency: string,
-  ) {
-    return subcoverages
-      .filter((subcoverage) => subcoverage.incluido)
-      .map((subcoverage) => {
-        const sublimit =
-          subcoverage.valor_sublimite === null
-            ? ""
-            : ` (${formatMoney(subcoverage.valor_sublimite, currency)})`;
-
-        return `${subcoverage.nombre}${sublimit}`;
-      })
-      .join("; ");
-  }
-
   newPage();
   addHeader();
   addGeneralInfoTable();
-  addCoverageTable();
-  addTotalsTable();
+  addPolicies();
   addCommercialNotes();
 
   pages.forEach((pdfPage, index) => {
@@ -861,161 +650,6 @@ function compositeOnWhite(value: number, alpha: number) {
   return Math.round(value * alpha + 255 * (1 - alpha));
 }
 
-function toPdfText(value: string) {
-  const bytes = Array.from(normalizePdfText(value)).map((char) =>
-    winAnsiCode(char),
-  );
-
-  return `<${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("")}>`;
-}
-
-function wrapTextToWidth(value: string, maxWidth: number, fontSize: number) {
-  const words = normalizePdfText(value).split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  words.forEach((word) => {
-    const chunks = splitLongWord(word, maxWidth, fontSize);
-
-    chunks.forEach((chunk) => {
-      const next = current ? `${current} ${chunk}` : chunk;
-
-      if (estimateTextWidthStatic(next, fontSize) <= maxWidth) {
-        current = next;
-        return;
-      }
-
-      if (current) {
-        lines.push(current);
-      }
-
-      current = chunk;
-    });
-  });
-
-  if (current) {
-    lines.push(current);
-  }
-
-  return lines.length > 0 ? lines : [""];
-}
-
-function splitLongWord(word: string, maxWidth: number, fontSize: number) {
-  if (estimateTextWidthStatic(word, fontSize) <= maxWidth) {
-    return [word];
-  }
-
-  const chunks: string[] = [];
-  let current = "";
-
-  Array.from(word).forEach((char) => {
-    const next = `${current}${char}`;
-
-    if (current && estimateTextWidthStatic(next, fontSize) > maxWidth) {
-      chunks.push(current);
-      current = char;
-      return;
-    }
-
-    current = next;
-  });
-
-  if (current) {
-    chunks.push(current);
-  }
-
-  return chunks;
-}
-
-function estimateTextWidthStatic(text: string, fontSize: number) {
-  return Array.from(text).reduce(
-    (total, char) => total + getApproxCharWidth(char, fontSize),
-    0,
-  );
-}
-
-function getApproxCharWidth(char: string, fontSize: number) {
-  if (char === " ") {
-    return fontSize * 0.26;
-  }
-
-  if (/[.,:;|/\\!¡'`´]/.test(char)) {
-    return fontSize * 0.24;
-  }
-
-  if (/[0-9$]/.test(char)) {
-    return fontSize * 0.48;
-  }
-
-  if (/[A-ZÁÉÍÓÚÜÑ]/.test(char)) {
-    return fontSize * 0.56;
-  }
-
-  if (/[mwMW]/.test(char)) {
-    return fontSize * 0.72;
-  }
-
-  if (/[ilIíÍ]/.test(char)) {
-    return fontSize * 0.25;
-  }
-
-  return fontSize * 0.48;
-}
-
-function normalizePdfText(value: string) {
-  return value
-    .replace(/\u00a0/g, " ")
-    .replace(/[“”]/g, "\"")
-    .replace(/[‘’]/g, "'")
-    .replace(/[–—]/g, "-")
-    .replace(/•/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function winAnsiCode(char: string) {
-  const specialCodes: Record<string, number> = {
-    "€": 0x80,
-    "‚": 0x82,
-    "ƒ": 0x83,
-    "„": 0x84,
-    "…": 0x85,
-    "†": 0x86,
-    "‡": 0x87,
-    "ˆ": 0x88,
-    "‰": 0x89,
-    "Š": 0x8a,
-    "‹": 0x8b,
-    "Œ": 0x8c,
-    "Ž": 0x8e,
-    "‘": 0x91,
-    "’": 0x92,
-    "“": 0x93,
-    "”": 0x94,
-    "•": 0x95,
-    "–": 0x96,
-    "—": 0x97,
-    "˜": 0x98,
-    "™": 0x99,
-    "š": 0x9a,
-    "›": 0x9b,
-    "œ": 0x9c,
-    "ž": 0x9e,
-    "Ÿ": 0x9f,
-  };
-  const code = char.charCodeAt(0);
-
-  if (specialCodes[char]) {
-    return specialCodes[char];
-  }
-
-  if ((code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff)) {
-    return code;
-  }
-
-  return "?".charCodeAt(0);
-}
-
 function formatMoney(value: number | null, currency = "COP") {
   if (value === null || !Number.isFinite(value)) {
     return "Sin valor";
@@ -1070,6 +704,14 @@ function formatCompactDate(value: string | null) {
     day: "2-digit",
     timeZone: "UTC",
   }).format(date);
+}
+
+function formatSublimitPercent(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return "Sin dato";
+  }
+
+  return `${Number((value * 100).toFixed(2))}%`;
 }
 
 function formatCommercialObservation(value: string) {

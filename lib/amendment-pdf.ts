@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
+import { createTableEngine, type PdfTableCell } from "@/lib/pdf/table";
+import { toPdfText } from "@/lib/pdf/text";
 import {
   calculateAmendmentTotalsByBlock,
   type AmendmentLiquidationRow,
@@ -19,15 +21,6 @@ type PdfImage = {
 };
 
 type PdfObjectBody = string | Buffer | Array<string | Buffer>;
-
-type PdfTableCell = {
-  text: string;
-  width: number;
-  align?: "left" | "right" | "center";
-  bold?: boolean;
-  fill?: string;
-  color?: string;
-};
 
 const PAGE_WIDTH = 792;
 const PAGE_HEIGHT = 612;
@@ -61,6 +54,17 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
       newPage();
     }
   }
+
+  const { addTableRows, getRowHeight } = createTableEngine({
+    page,
+    newPage,
+    marginX: MARGIN_X,
+    topY: TOP_Y,
+    bottomY: BOTTOM_Y,
+    border: TABLE_BORDER,
+    borderWidth: 0.35,
+    textTop: 5,
+  });
 
   function addHeader() {
     ensureSpace(80);
@@ -270,7 +274,7 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
         width: 82,
         align: "right",
       },
-      { text: formatCompactDate(row.fecha_hasta), width: 54 },
+      { text: formatCompactDate(row.fecha_hasta), width: 54, nowrap: true },
       { text: String(row.dias_prorroga), width: 34, align: "right" },
       {
         text: formatMoney(row.prima_valor_adicionado, snapshot.contrato.moneda),
@@ -379,6 +383,7 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
         fontSize: 7.4,
         lineHeight: 9,
         minHeight: 18,
+        keepTogether: true,
       },
     );
     page().y -= 8;
@@ -399,98 +404,6 @@ export function generateAmendmentQuotePdf(snapshot: AmendmentQuoteSnapshot) {
         minHeight: 17,
       },
     );
-  }
-
-  function addTableRows(
-    rows: PdfTableCell[][],
-    options: {
-      x?: number;
-      y?: number;
-      fontSize: number;
-      lineHeight: number;
-      minHeight: number;
-    },
-  ) {
-    let y = options.y ?? page().y;
-
-    rows.forEach((row) => {
-      const rowHeight = getRowHeight(
-        row,
-        options.fontSize,
-        options.lineHeight,
-        options.minHeight,
-      );
-
-      if (typeof options.y !== "number" && page().y - rowHeight < BOTTOM_Y) {
-        newPage();
-        y = page().y;
-      }
-
-      drawTableRow(row, {
-        x: options.x ?? MARGIN_X,
-        y,
-        height: rowHeight,
-        fontSize: options.fontSize,
-        lineHeight: options.lineHeight,
-      });
-
-      y -= rowHeight;
-
-      if (typeof options.y !== "number") {
-        page().y -= rowHeight;
-      }
-    });
-  }
-
-  function drawTableRow(
-    row: PdfTableCell[],
-    options: {
-      x: number;
-      y: number;
-      height: number;
-      fontSize: number;
-      lineHeight: number;
-    },
-  ) {
-    let x = options.x;
-
-    row.forEach((cell) => {
-      const fill = cell.fill ?? "1 1 1";
-
-      page().commands.push(
-        `${fill} rg ${x} ${options.y - options.height} ${cell.width} ${options.height} re f`,
-        `${TABLE_BORDER} RG 0.35 w ${x} ${options.y - options.height} ${cell.width} ${options.height} re S`,
-      );
-      x += cell.width;
-    });
-
-    x = options.x;
-
-    row.forEach((cell) => {
-      const lines = getCellLines(cell.text, cell.width, options.fontSize);
-      const maxLines = Math.max(
-        1,
-        Math.floor((options.height - 5) / options.lineHeight),
-      );
-
-      lines.slice(0, maxLines).forEach((line, lineIndex) => {
-        const textWidth = estimateTextWidth(line, options.fontSize);
-        const textX = getAlignedTextX(
-          x,
-          cell.width,
-          textWidth,
-          cell.align ?? "left",
-        );
-        const textY =
-          options.y - 5 - options.fontSize - lineIndex * options.lineHeight;
-
-        page().commands.push(
-          `${cell.color ?? "0 0 0"} rg BT /${cell.bold ? "F2" : "F1"} ${options.fontSize} Tf 1 0 0 1 ${textX} ${textY} Tm ${toPdfText(line)} Tj ET`,
-        );
-      });
-
-      x += cell.width;
-    });
   }
 
   newPage();
@@ -794,196 +707,6 @@ function paethPredictor(left: number, up: number, upperLeft: number) {
 
 function compositeOnWhite(value: number, alpha: number) {
   return Math.round(value * alpha + 255 * (1 - alpha));
-}
-
-function getRowHeight(
-  row: PdfTableCell[],
-  fontSize: number,
-  lineHeight: number,
-  minHeight: number,
-) {
-  const lineCount = Math.max(
-    ...row.map((cell) => getCellLines(cell.text, cell.width, fontSize).length),
-    1,
-  );
-
-  return Math.max(minHeight, 7 + lineCount * lineHeight);
-}
-
-function getCellLines(text: string, width: number, fontSize: number) {
-  return wrapTextToWidth(text, Math.max(8, width - 7), fontSize);
-}
-
-function getAlignedTextX(
-  x: number,
-  width: number,
-  textWidth: number,
-  align: "left" | "right" | "center",
-) {
-  if (align === "right") {
-    return x + width - textWidth - 3.5;
-  }
-
-  if (align === "center") {
-    return x + (width - textWidth) / 2;
-  }
-
-  return x + 3.5;
-}
-
-function estimateTextWidth(text: string, fontSize: number) {
-  return Array.from(text).reduce(
-    (total, char) => total + getApproxCharWidth(char, fontSize),
-    0,
-  );
-}
-
-function wrapTextToWidth(value: string, maxWidth: number, fontSize: number) {
-  const words = normalizePdfText(value).split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  words.forEach((word) => {
-    const chunks = splitLongWord(word, maxWidth, fontSize);
-
-    chunks.forEach((chunk) => {
-      const next = current ? `${current} ${chunk}` : chunk;
-
-      if (estimateTextWidth(next, fontSize) <= maxWidth) {
-        current = next;
-        return;
-      }
-
-      if (current) {
-        lines.push(current);
-      }
-
-      current = chunk;
-    });
-  });
-
-  if (current) {
-    lines.push(current);
-  }
-
-  return lines.length > 0 ? lines : [""];
-}
-
-function splitLongWord(word: string, maxWidth: number, fontSize: number) {
-  if (estimateTextWidth(word, fontSize) <= maxWidth) {
-    return [word];
-  }
-
-  const chunks: string[] = [];
-  let current = "";
-
-  Array.from(word).forEach((char) => {
-    const next = `${current}${char}`;
-
-    if (current && estimateTextWidth(next, fontSize) > maxWidth) {
-      chunks.push(current);
-      current = char;
-      return;
-    }
-
-    current = next;
-  });
-
-  if (current) {
-    chunks.push(current);
-  }
-
-  return chunks;
-}
-
-function getApproxCharWidth(char: string, fontSize: number) {
-  if (char === " ") {
-    return fontSize * 0.26;
-  }
-
-  if (/[.,:;|/\\!¡'`´]/.test(char)) {
-    return fontSize * 0.24;
-  }
-
-  if (/[0-9$]/.test(char)) {
-    return fontSize * 0.48;
-  }
-
-  if (/[A-ZÁÉÍÓÚÜÑ]/.test(char)) {
-    return fontSize * 0.56;
-  }
-
-  if (/[mwMW]/.test(char)) {
-    return fontSize * 0.72;
-  }
-
-  if (/[ilIíÍ]/.test(char)) {
-    return fontSize * 0.25;
-  }
-
-  return fontSize * 0.48;
-}
-
-function toPdfText(value: string) {
-  const bytes = Array.from(normalizePdfText(value)).map((char) =>
-    winAnsiCode(char),
-  );
-
-  return `<${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("")}>`;
-}
-
-function normalizePdfText(value: string) {
-  return value
-    .replace(/\u00a0/g, " ")
-    .replace(/[“”]/g, "\"")
-    .replace(/[‘’]/g, "'")
-    .replace(/[–—]/g, "-")
-    .replace(/•/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function winAnsiCode(char: string) {
-  const specialCodes: Record<string, number> = {
-    "€": 0x80,
-    "‚": 0x82,
-    "ƒ": 0x83,
-    "„": 0x84,
-    "…": 0x85,
-    "†": 0x86,
-    "‡": 0x87,
-    "ˆ": 0x88,
-    "‰": 0x89,
-    "Š": 0x8a,
-    "‹": 0x8b,
-    "Œ": 0x8c,
-    "Ž": 0x8e,
-    "‘": 0x91,
-    "’": 0x92,
-    "“": 0x93,
-    "”": 0x94,
-    "•": 0x95,
-    "–": 0x96,
-    "—": 0x97,
-    "˜": 0x98,
-    "™": 0x99,
-    "š": 0x9a,
-    "›": 0x9b,
-    "œ": 0x9c,
-    "ž": 0x9e,
-    "Ÿ": 0x9f,
-  };
-  const code = char.charCodeAt(0);
-
-  if (specialCodes[char]) {
-    return specialCodes[char];
-  }
-
-  if ((code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff)) {
-    return code;
-  }
-
-  return "?".charCodeAt(0);
 }
 
 function formatSubcoverages(

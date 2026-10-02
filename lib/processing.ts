@@ -3,7 +3,17 @@ import {
   normalizeCoverage,
   type CoverageSubamparo,
 } from "@/lib/coverage-calculations";
-import { addDaysToDateOnly, diffDaysDateOnly } from "@/lib/date-only";
+import { isCivilLiabilityCoverage } from "@/lib/coverage-policy";
+import {
+  findAdditionalPeriod,
+  normalizePeriodUnit,
+  parseSpanishDate,
+} from "@/lib/spanish-dates";
+import {
+  addDaysToDateOnly,
+  addMonthsToDateOnly,
+  diffDaysDateOnly,
+} from "@/lib/date-only";
 import type { Database, Json, ModificacionContractual } from "@/lib/database.types";
 import { getServerEnv } from "@/lib/env";
 import {
@@ -1841,6 +1851,7 @@ function mapExtractionToCoverageMapping(
         null,
       ),
       dias_adicionales: normalizeInteger(coverageRecord.dias_adicionales),
+      ...readAiAdditionalPeriod(coverageRecord.periodo_adicional),
       fecha_desde: normalizeDate(coverageRecord.fecha_desde),
       fecha_hasta: normalizeDate(coverageRecord.fecha_hasta),
       fuente_texto: normalizeText(coverageRecord.fuente_texto),
@@ -1918,6 +1929,8 @@ function mapExtractionToCoverageMapping(
       fecha_hasta: normalized.fecha_hasta,
       fecha_hasta_manual: normalized.fecha_hasta_manual,
       dias_adicionales: normalized.dias_adicionales,
+      periodo_adicional_cantidad: normalized.periodo_adicional_cantidad,
+      periodo_adicional_unidad: normalized.periodo_adicional_unidad,
       fuente_pagina: normalized.fuente_pagina,
       fuente_texto: normalized.fuente_texto,
       confianza: normalized.confianza,
@@ -1933,6 +1946,17 @@ function mapExtractionToCoverageMapping(
   });
 
   return result;
+}
+
+// Un periodo en 0 o sin unidad no cuenta: deja actuar al texto de la cláusula y a las reglas por defecto.
+function readAiAdditionalPeriod(value: unknown) {
+  const record = asRecord(value);
+  const cantidad = normalizeInteger(record.cantidad);
+  const unidad = normalizePeriodUnit(record.unidad);
+
+  return cantidad !== null && cantidad > 0 && unidad !== null
+    ? { periodo_adicional_cantidad: cantidad, periodo_adicional_unidad: unidad }
+    : {};
 }
 
 function validateContractUpdatePayload(update: ContractUpdate): {
@@ -2380,93 +2404,34 @@ function containsDurationDateSignal(text: string) {
 }
 
 function extractFirstSpanishDate(text: string) {
-  const writtenDate = text.match(
-    /\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+de\s+(\d{4})\b/i,
-  );
-
-  if (writtenDate) {
-    return toIsoDate(
-      Number(writtenDate[1]),
-      getSpanishMonthNumber(writtenDate[2]),
-      Number(writtenDate[3]),
-    );
-  }
-
-  const numericDate = text.match(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/);
-
-  if (numericDate) {
-    return toIsoDate(
-      Number(numericDate[1]),
-      Number(numericDate[2]),
-      Number(numericDate[3]),
-    );
-  }
-
-  return null;
+  return parseSpanishDate(text);
 }
 
 function extractDuration(text: string) {
-  const normalized = normalizeForDateSearch(text);
-  const parenthesized = normalized.match(
-    /\((\d+)\)\s*(anos?|mes(?:es)?|dias?)/,
-  );
+  const period = findAdditionalPeriod(text, { preferSignal: false });
 
-  if (parenthesized) {
-    return durationFromMatch(Number(parenthesized[1]), parenthesized[2]);
-  }
-
-  const numeric = normalized.match(/\b(\d+)\s*(anos?|mes(?:es)?|dias?)\b/);
-
-  if (numeric) {
-    return durationFromMatch(Number(numeric[1]), numeric[2]);
-  }
-
-  if (/\bun ano\b/.test(normalized)) {
-    return { years: 1, months: 0, days: 0 };
-  }
-
-  if (/\bdoce meses\b/.test(normalized)) {
-    return { years: 0, months: 12, days: 0 };
-  }
-
-  if (/\bdoscientos cuarenta\b/.test(normalized) && /\bdias?\b/.test(normalized)) {
-    return { years: 0, months: 0, days: 240 };
-  }
-
-  return null;
-}
-
-function durationFromMatch(value: number, unit: string) {
-  if (!Number.isFinite(value) || value <= 0) {
+  if (!period) {
     return null;
   }
 
-  if (unit.startsWith("ano")) {
-    return { years: value, months: 0, days: 0 };
-  }
-
-  if (unit.startsWith("mes")) {
-    return { years: 0, months: value, days: 0 };
-  }
-
-  return { years: 0, months: 0, days: value };
+  return {
+    years: period.unidad === "anios" ? period.cantidad : 0,
+    months: period.unidad === "meses" ? period.cantidad : 0,
+    days: period.unidad === "dias" ? period.cantidad : 0,
+  };
 }
 
+// Meses y años de calendario con ajuste a fin de mes; los días se suman al final.
 function addDuration(
   date: string,
   duration: { years: number; months: number; days: number },
 ) {
-  const parsedDate = new Date(`${date}T00:00:00.000Z`);
+  const shifted = addMonthsToDateOnly(
+    date,
+    duration.years * 12 + duration.months,
+  );
 
-  if (!Number.isFinite(parsedDate.getTime())) {
-    return null;
-  }
-
-  parsedDate.setUTCFullYear(parsedDate.getUTCFullYear() + duration.years);
-  parsedDate.setUTCMonth(parsedDate.getUTCMonth() + duration.months);
-  parsedDate.setUTCDate(parsedDate.getUTCDate() + duration.days);
-
-  return parsedDate.toISOString().slice(0, 10);
+  return shifted ? addDaysToDateOnly(shifted, duration.days) : null;
 }
 
 function durationToPlazoText(
@@ -2787,44 +2752,6 @@ function extractFirstMoneyAmount(text: string) {
   const match = text.match(/\$\s*[\d.,]+/);
 
   return match ? normalizeNumber(match[0]) : null;
-}
-
-function getSpanishMonthNumber(month: string) {
-  const months: Record<string, number> = {
-    enero: 1,
-    febrero: 2,
-    marzo: 3,
-    abril: 4,
-    mayo: 5,
-    junio: 6,
-    julio: 7,
-    agosto: 8,
-    septiembre: 9,
-    setiembre: 9,
-    octubre: 10,
-    noviembre: 11,
-    diciembre: 12,
-  };
-
-  return months[month.toLowerCase()] ?? null;
-}
-
-function toIsoDate(day: number, month: number | null, year: number) {
-  if (!month || !Number.isFinite(day) || !Number.isFinite(year)) {
-    return null;
-  }
-
-  const date = new Date(Date.UTC(year, month - 1, day));
-
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month - 1 ||
-    date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
-  return date.toISOString().slice(0, 10);
 }
 
 function extractRelevantDateSentence(text: string) {
@@ -3274,20 +3201,9 @@ function selectCivilLiabilitySourceRecords(records: Record<string, unknown>[]) {
 }
 
 function isCivilLiabilityRecord(record: Record<string, unknown>) {
-  const text = normalizeCivilLiabilityText(record);
-
-  return (
-    text.includes("responsabilidad civil") ||
-    text.includes("extracontractual") ||
-    text.includes("predios") ||
-    text.includes("labores") ||
-    text.includes("operaciones") ||
-    text.includes("plo") ||
-    text.includes("patronal") ||
-    text.includes("civil cruzada") ||
-    text.includes("vehiculos propios") ||
-    text.includes("vehiculos no propios") ||
-    text.includes("subcontrat")
+  return isCivilLiabilityCoverage(
+    normalizeText(record.tipo_amparo),
+    normalizeText(record.fuente_texto),
   );
 }
 
@@ -3384,6 +3300,8 @@ function validateCoverageRow(row: CoverageInsert): CoverageInsert {
     fecha_hasta: normalizeDate(row.fecha_hasta),
     fecha_hasta_manual: normalizeBoolean(row.fecha_hasta_manual, false),
     dias_adicionales: normalizeInteger(row.dias_adicionales),
+    periodo_adicional_cantidad: normalizeInteger(row.periodo_adicional_cantidad),
+    periodo_adicional_unidad: normalizePeriodUnit(row.periodo_adicional_unidad),
     fuente_pagina: normalizeInteger(row.fuente_pagina),
     fuente_texto: normalizeText(row.fuente_texto),
     confianza: normalizeEnum(row.confianza, CONFIDENCE_VALUES, "baja"),

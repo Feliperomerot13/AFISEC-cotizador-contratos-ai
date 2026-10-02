@@ -48,7 +48,7 @@ estado vigente utilizado por el siguiente otrosí.
 
 - Node.js 22.
 - Next.js 16.2.4 con App Router.
-- versión de aplicación `0.4.1`.
+- versión de aplicación `0.5.0`.
 - React 19.
 - TypeScript.
 - Tailwind CSS 4.
@@ -614,3 +614,23 @@ Pendiente:
 Los estados históricos deben leerse junto con las secciones de cierre de cada
 Sprint. El código, las migraciones y las pruebas representan la fuente técnica
 vigente.
+
+## 20. Sprint 5
+
+- **Nueva cotización:** `POST /api/contracts` crea cliente y contrato
+  `origen='manual'` sin documento. `validate` exige datos mínimos; `/process`
+  rechaza contratos manuales o con póliza emitida.
+- **Periodos adicionales:** `amparos.periodo_adicional_cantidad/unidad`;
+  `dias_adicionales` queda como equivalente en días. Aritmética de calendario en
+  `lib/date-only.ts`; lectura de texto en `lib/spanish-dates.ts`.
+- **Pólizas:** `lib/coverage-policy.ts` es el único clasificador de RCE. El
+  snapshot v2 incluye `poliza` por amparo y `polizas[]`; `totales` se mantiene
+  solo por compatibilidad con `cotizaciones.total_*`. La emisión sigue siendo por
+  cotización.
+- **PDF:** `lib/pdf/text.ts` (métricas Helvetica reales) y `lib/pdf/table.ts`
+  (motor de tablas) son compartidos por `quote-pdf.ts` y `amendment-pdf.ts`.
+- **Renovación:** la lógica vive en `lib/renewal.ts` y reaplica el periodo con
+  unidad.
+- **Pruebas:** `scripts/run-tests.mjs` ejecuta cada `scripts/validate-*.mjs`.
+
+Detalle en [Sprint 5](./Sprints/Sprint_05_Ajustes_Funcionales_Cotizador_AFISEC.md).

@@ -55,7 +55,7 @@ export const CONTRACT_STATES = [
   "error",
 ] as const;
 
-export const PROMPT_VERSION = "afisec-v0.4.1";
+export const PROMPT_VERSION = "afisec-v0.5.0";
 
 export const APP_RELEASE_LABEL = "";
 

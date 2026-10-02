@@ -682,8 +682,11 @@ const misclassifiedContractualCoverage = normalizeCoverage(
 assert.equal(misclassifiedContractualCoverage.tipo_vigencia, "contractual");
 assert.equal(misclassifiedContractualCoverage.base_vigencia, "fecha_fin_contrato");
 assert.equal(misclassifiedContractualCoverage.fecha_desde, "2024-02-02");
-assert.equal(misclassifiedContractualCoverage.fecha_hasta, "2025-05-03");
-assert.equal(misclassifiedContractualCoverage.dias_adicionales, 90);
+// Sprint 5: "tres (3) meses" se calcula con aritmética de calendario (antes 3 x 30 = 90 días).
+assert.equal(misclassifiedContractualCoverage.fecha_hasta, "2025-05-02");
+assert.equal(misclassifiedContractualCoverage.dias_adicionales, 89);
+assert.equal(misclassifiedContractualCoverage.periodo_adicional_cantidad, 3);
+assert.equal(misclassifiedContractualCoverage.periodo_adicional_unidad, "meses");
 
 const contractualQualityStartBaseCoverage = normalizeCoverage(
   {

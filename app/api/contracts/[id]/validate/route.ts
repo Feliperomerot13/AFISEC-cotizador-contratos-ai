@@ -1,6 +1,7 @@
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
 import { normalizeCoverage } from "@/lib/coverage-calculations";
 import type { Json } from "@/lib/database.types";
+import { getManualQuoteIssues } from "@/lib/manual-quote";
 import { validateContractSchema } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
@@ -36,6 +37,34 @@ export async function PUT(request: Request, { params }: IdContext) {
         `La póliza base emitida (${activeIssuedQuote.numero_cotizacion} v${activeIssuedQuote.version}) bloquea la edición directa. Revierte o anula la emisión antes de validar cambios.`,
         409,
       );
+    }
+
+    const { data: storedContract, error: storedContractError } = await supabase
+      .from("contratos")
+      .select("origen")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (storedContractError) {
+      throw new Error(
+        `Fallo al consultar el contrato: ${storedContractError.message}`,
+      );
+    }
+
+    const isManual = storedContract?.origen === "manual";
+
+    if (isManual) {
+      const manualIssues = getManualQuoteIssues(
+        payload.contrato,
+        payload.amparos.length,
+      );
+
+      if (manualIssues.length > 0) {
+        return jsonError(
+          `Completa los datos mínimos de la cotización: ${manualIssues.join(" ")}`,
+          422,
+        );
+      }
     }
 
     const { error: updateError } = await supabase
@@ -81,6 +110,7 @@ export async function PUT(request: Request, { params }: IdContext) {
                 payload.contrato.valor_contrato,
               fechaInicio: payload.contrato.fecha_inicio,
               fechaFin: payload.contrato.fecha_fin,
+              origenManual: isManual,
             },
           );
           const reviewReasons = [
@@ -117,6 +147,8 @@ export async function PUT(request: Request, { params }: IdContext) {
             fecha_hasta: normalized.fecha_hasta,
             fecha_hasta_manual: normalized.fecha_hasta_manual,
             dias_adicionales: normalized.dias_adicionales,
+            periodo_adicional_cantidad: normalized.periodo_adicional_cantidad,
+            periodo_adicional_unidad: normalized.periodo_adicional_unidad,
             fuente_pagina: amparo.fuente_pagina,
             fuente_texto: amparo.fuente_texto,
             confianza: normalized.confianza,

@@ -1,5 +1,28 @@
 # Historial de versiones
 
+## [0.5.0] - 2026-10-01
+
+### Agregado
+
+- Nueva cotización sin documento (`contratos.origen = 'manual'`).
+- Periodo adicional de vigencia con cantidad y unidad (días, meses, años).
+- Lectura de fechas y periodos en español (texto largo, números en palabras).
+- Clasificador único de pólizas y snapshot v2 con totales por póliza.
+
+### Corregido
+
+- PDF: textos y cifras fuera de celdas, wrapping, totales y filas largas.
+- Amparos de Cumplimiento convertidos en RCE por palabras sueltas del texto.
+- Fin de mes al sumar meses en el fallback de plazos.
+
+### Cambiado
+
+- El PDF y la interfaz presentan una póliza por sección y eliminan el total general.
+- Meses y años se calculan con aritmética de calendario.
+- `/process` rechaza contratos manuales y con póliza base emitida.
+- Migraciones: `20261001_sprint5_periodo_adicional.sql` y
+  `20261001_sprint5_origen_cotizacion.sql`.
+
 ## [0.4.1] - 2026-07-10
 
 ### Agregado

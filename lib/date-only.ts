@@ -44,6 +44,38 @@ export function addDaysToDateOnly(value: string, days: number): string | null {
   return dateOnlyToIso(date);
 }
 
+function daysInMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+// Suma meses de calendario; si el día no existe en el mes destino, usa el último día del mes.
+export function addMonthsToDateOnly(value: string, months: number): string | null {
+  const parts = parseDateOnly(value);
+
+  if (!parts || !Number.isFinite(months)) {
+    return null;
+  }
+
+  const monthIndex = parts.year * 12 + (parts.month - 1) + Math.trunc(months);
+  const year = Math.floor(monthIndex / 12);
+  const month = (monthIndex % 12 + 12) % 12 + 1;
+  const day = Math.min(parts.day, daysInMonth(year, month));
+
+  return dateOnlyToIso(new Date(Date.UTC(year, month - 1, day)));
+}
+
+export function addPeriodToDateOnly(
+  value: string,
+  quantity: number,
+  unit: "dias" | "meses" | "anios",
+): string | null {
+  if (unit === "dias") {
+    return addDaysToDateOnly(value, quantity);
+  }
+
+  return addMonthsToDateOnly(value, unit === "anios" ? quantity * 12 : quantity);
+}
+
 export function diffDaysDateOnly(startValue: string, endValue: string): number | null {
   const start = parseDateOnly(startValue);
   const end = parseDateOnly(endValue);

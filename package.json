@@ -1,6 +1,6 @@
 {
   "name": "muneco-digital",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "engines": {
     "node": "22.x"
@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-loader ./scripts/ts-alias-loader.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-normalizers.mjs"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@azure-rest/ai-document-intelligence": "^1.1.0",

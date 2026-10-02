@@ -12,6 +12,7 @@ import type {
   Json,
   ModificacionContractual,
 } from "@/lib/database.types";
+import { isCivilLiabilityName } from "@/lib/coverage-policy";
 import {
   formatCoverageName,
   getQuoteSnapshot,
@@ -766,14 +767,7 @@ export function normalizeCoverageKey(value: string) {
 }
 
 export function isCivilLiabilityCoverage(value: string) {
-  const normalized = normalizeCoverageKey(value);
-
-  return (
-    normalized.includes("responsabilidad_civil") ||
-    normalized.includes("extracontractual") ||
-    normalized.includes("rce") ||
-    normalized.includes("plo")
-  );
+  return isCivilLiabilityName(value);
 }
 
 function parseSubcoverages(value: Json): QuoteSnapshotSubcoverage[] {

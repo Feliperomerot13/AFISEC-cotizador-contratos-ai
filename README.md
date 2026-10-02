@@ -11,7 +11,7 @@ en punto de verdad para los pasos posteriores.
 
 ## Estado funcional
 
-El repositorio contiene los flujos implementados en los Sprints 1, 2 y 3:
+El repositorio contiene los flujos implementados en los Sprints 1 a 5:
 
 - carga de contratos, órdenes de compra, órdenes de servicio y otrosíes;
 - extracción de texto con Azure AI Document Intelligence;
@@ -31,7 +31,12 @@ El repositorio contiene los flujos implementados en los Sprints 1, 2 y 3:
 - histórico operativo de póliza base y otrosíes.
 - eliminación física protegida de contratos nunca emitidos;
 - eliminación definitiva de cotizaciones no emitidas;
-- versión visible en la interfaz.
+- versión visible en la interfaz;
+- Nueva cotización sin documento (datos mínimos validados en servidor);
+- periodos adicionales de vigencia en días, meses o años con aritmética de
+  calendario;
+- PDF robusto frente a contenido variable, con una sección y un total por póliza
+  (Cumplimiento y Responsabilidad Civil), sin total general.
 
 No están implementados:
 
@@ -43,6 +48,15 @@ No están implementados:
 - procesamiento mediante una cola durable.
 
 ## Flujos principales
+
+### Nueva cotización (sin documento)
+
+```text
+Nueva cotización (tomador, asegurado, ejecutiva)
+  -> revisión editable (valor, fechas, objeto, amparos)
+  -> validación con datos mínimos
+  -> cotización PDF versionada -> emisión
+```
 
 ### Contrato base
 
@@ -136,6 +150,10 @@ original. Contiene migraciones incrementales que deben aplicarse en orden:
 6. `docs/supabase-migrations/20260630_sprint4_prima_manual_eliminacion.sql`
 7. `docs/supabase-migrations/20260630_sprint4_fix_documentos_tipo_documento_check.sql`
 8. `docs/supabase-migrations/20260710_v041_resumen_overrides_cotizaciones.sql`
+9. `docs/supabase-migrations/20261001_sprint5_periodo_adicional.sql`
+10. `docs/supabase-migrations/20261001_sprint5_origen_cotizacion.sql`
+
+Las migraciones del Sprint 5 deben aplicarse antes de desplegar la versión 0.5.0.
 
 Los valores permitidos en `documentos.tipo_documento` deben mantenerse alineados
 con `DOCUMENT_TYPES` de `lib/constants.ts` (`contrato_base`, `orden`,
@@ -219,9 +237,9 @@ npm run build
 npm run start
 ```
 
-`npm test` ejecuta las validaciones determinísticas de normalización, fechas,
-vigencias, valores periódicos y liquidación incremental ubicadas en
-`scripts/validate-normalizers.mjs`.
+`npm test` ejecuta cada `scripts/validate-*.mjs`: normalización, fechas,
+vigencias, periodos, liquidación incremental, clasificación por póliza, PDF,
+cotización manual y lectura de fechas.
 
 No hay todavía pruebas de navegador ni pruebas de integración contra Supabase.
 
@@ -262,6 +280,7 @@ es mover extracción y procesamiento a una cola o worker durable.
 - [Sprint 2: cotización y emisión](./docs/Sprints/sprint_2_cotizacion_emision_afisec.md)
 - [Sprint 3: otrosíes](./docs/Sprints/sprint_3_otrosies_endosos_afisec.md)
 - [Sprint 4: estabilización](./docs/Sprints/Sprint_04_Estabilizacion_MVP_AFISEC.md)
+- [Sprint 5: ajustes funcionales](./docs/Sprints/Sprint_05_Ajustes_Funcionales_Cotizador_AFISEC.md)
 
 Los documentos de Sprint conservan decisiones y referencias históricas. Cuando
 una referencia del archivo Excel difiere de una regla aprobada posteriormente,

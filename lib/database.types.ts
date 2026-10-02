@@ -65,6 +65,7 @@ export type Database = {
           contratista: string | null;
           contratista_nit: string | null;
           estado: string;
+          origen: "documento" | "manual";
           mensaje_error: string | null;
           extraido_ia: boolean;
           validado_por: string | null;
@@ -94,6 +95,7 @@ export type Database = {
           contratista?: string | null;
           contratista_nit?: string | null;
           estado: string;
+          origen?: "documento" | "manual";
           mensaje_error?: string | null;
           extraido_ia?: boolean;
           validado_por?: string | null;
@@ -159,6 +161,8 @@ export type Database = {
           fecha_hasta: string | null;
           fecha_hasta_manual: boolean;
           dias_adicionales: number | null;
+          periodo_adicional_cantidad: number | null;
+          periodo_adicional_unidad: "dias" | "meses" | "anios" | null;
           fuente_pagina: number | null;
           fuente_texto: string | null;
           confianza: string | null;
@@ -196,6 +200,8 @@ export type Database = {
           fecha_hasta?: string | null;
           fecha_hasta_manual?: boolean;
           dias_adicionales?: number | null;
+          periodo_adicional_cantidad?: number | null;
+          periodo_adicional_unidad?: "dias" | "meses" | "anios" | null;
           fuente_pagina?: number | null;
           fuente_texto?: string | null;
           confianza?: string | null;

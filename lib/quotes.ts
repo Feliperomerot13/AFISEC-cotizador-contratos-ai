@@ -1,8 +1,32 @@
 import type { Amparo, Cliente, Contrato, Cotizacion, Json } from "@/lib/database.types";
 import { getExecutiveContact, type ExecutiveContact } from "@/lib/constants";
+import {
+  COVERAGE_POLICY_LABELS,
+  COVERAGE_POLICY_ORDER,
+  classifyCoveragePolicy,
+  isCivilLiabilityName,
+  type CoveragePolicy,
+} from "@/lib/coverage-policy";
+
+// v1: sin campo schema_version ni póliza por amparo. v2: agrupa por póliza.
+export const QUOTE_SNAPSHOT_SCHEMA_VERSION = 2;
+
+export type QuoteTotals = {
+  prima_neta: number | null;
+  iva: number | null;
+  prima_total: number | null;
+};
+
+export type QuoteSnapshotAdditionalPeriod = {
+  cantidad: number;
+  unidad: "dias" | "meses" | "anios";
+};
 
 export type QuoteSnapshotCoverage = {
   tipo_amparo: string;
+  poliza?: CoveragePolicy;
+  // Solo si la fecha hasta salió de este periodo (no de una fecha manual); lo usa la renovación.
+  periodo_adicional?: QuoteSnapshotAdditionalPeriod;
   valor_asegurado: number | null;
   valor_base_calculo: number | null;
   modo_calculo: string | null;
@@ -25,7 +49,14 @@ export type QuoteSnapshotSubcoverage = {
   valor_sublimite: number | null;
 };
 
+export type QuoteSnapshotPolicySummary = {
+  poliza: CoveragePolicy;
+  nombre: string;
+  totales: QuoteTotals;
+};
+
 export type QuoteSnapshot = {
+  schema_version?: number;
   generado_en: string;
   cliente: {
     id: string | number;
@@ -52,11 +83,9 @@ export type QuoteSnapshot = {
     contratista_nit: string | null;
   };
   amparos: QuoteSnapshotCoverage[];
-  totales: {
-    prima_neta: number | null;
-    iva: number | null;
-    prima_total: number | null;
-  };
+  // Suma de todas las pólizas; solo para compatibilidad con cotizaciones.total_*.
+  totales: QuoteTotals;
+  polizas?: QuoteSnapshotPolicySummary[];
   observaciones: string[];
 };
 
@@ -86,11 +115,12 @@ export function buildQuoteSnapshot({
       prima_total: amparo.prima_total,
       tasa: amparo.tasa,
       tasa_manual: amparo.tasa_manual,
+      ...snapshotAdditionalPeriod(amparo),
       subamparos: parseQuoteSubcoverages(amparo.subamparos),
     }));
   const totals = calculateQuoteTotals(coverages);
 
-  return {
+  return applyPolicyStructure({
     generado_en: generatedAt,
     cliente: {
       id: client.id,
@@ -122,7 +152,25 @@ export function buildQuoteSnapshot({
       "Cotizacion sujeta a revision y aprobacion final de la aseguradora.",
       "Esta cotizacion no constituye poliza emitida ni cobertura vigente hasta su expedicion formal por la aseguradora.",
     ],
-  };
+  });
+}
+
+function snapshotAdditionalPeriod(
+  amparo: Amparo,
+): { periodo_adicional: QuoteSnapshotAdditionalPeriod } | Record<string, never> {
+  const unit = amparo.periodo_adicional_unidad;
+  const quantity = amparo.periodo_adicional_cantidad;
+
+  if (
+    amparo.fecha_hasta_manual ||
+    quantity === null ||
+    quantity === undefined ||
+    (unit !== "dias" && unit !== "meses" && unit !== "anios")
+  ) {
+    return {};
+  }
+
+  return { periodo_adicional: { cantidad: quantity, unidad: unit } };
 }
 
 export function calculateQuoteTotals(coverages: QuoteSnapshotCoverage[]) {
@@ -133,27 +181,56 @@ export function calculateQuoteTotals(coverages: QuoteSnapshotCoverage[]) {
   return { prima_neta, iva, prima_total };
 }
 
-export function calculateQuoteTotalsByBlock(coverages: QuoteSnapshotCoverage[]) {
-  const civilLiabilityCoverages = coverages.filter((coverage) =>
-    isCivilLiabilityCoverageType(coverage.tipo_amparo),
-  );
-  const guaranteeCoverages = coverages.filter(
-    (coverage) => !isCivilLiabilityCoverageType(coverage.tipo_amparo),
-  );
+export type QuotePolicyGroup = {
+  poliza: CoveragePolicy;
+  nombre: string;
+  amparos: QuoteSnapshotCoverage[];
+  totales: QuoteTotals;
+};
 
-  return {
-    garantias: calculateQuoteGroupTotals(guaranteeCoverages),
-    responsabilidad_civil: calculateQuoteGroupTotals(civilLiabilityCoverages),
-    general: calculateQuoteTotals(coverages),
-  };
+export function getCoveragePolicy(coverage: QuoteSnapshotCoverage) {
+  return coverage.poliza ?? classifyCoveragePolicy(coverage.tipo_amparo);
 }
 
-function calculateQuoteGroupTotals(coverages: QuoteSnapshotCoverage[]) {
-  if (coverages.length === 0) {
-    return { prima_neta: 0, iva: 0, prima_total: 0 };
-  }
+// Agrupa por póliza; sirve igual para snapshots v1 (sin campo poliza) y v2.
+export function groupQuoteCoveragesByPolicy(
+  coverages: QuoteSnapshotCoverage[],
+): QuotePolicyGroup[] {
+  return COVERAGE_POLICY_ORDER.flatMap((poliza) => {
+    const amparos = coverages.filter(
+      (coverage) => getCoveragePolicy(coverage) === poliza,
+    );
 
-  return calculateQuoteTotals(coverages);
+    return amparos.length === 0
+      ? []
+      : [
+          {
+            poliza,
+            nombre: COVERAGE_POLICY_LABELS[poliza],
+            amparos,
+            totales: calculateQuoteTotals(amparos),
+          },
+        ];
+  });
+}
+
+// Marca cada amparo con su póliza y registra el resumen por póliza (snapshot v2).
+export function applyPolicyStructure(snapshot: QuoteSnapshot): QuoteSnapshot {
+  const amparos = snapshot.amparos.map((coverage) => ({
+    ...coverage,
+    poliza: getCoveragePolicy(coverage),
+  }));
+
+  return {
+    ...snapshot,
+    schema_version: QUOTE_SNAPSHOT_SCHEMA_VERSION,
+    amparos,
+    polizas: groupQuoteCoveragesByPolicy(amparos).map((group) => ({
+      poliza: group.poliza,
+      nombre: group.nombre,
+      totales: group.totales,
+    })),
+  };
 }
 
 export function buildQuoteNumber(contractId: string | number, generatedAt: string) {
@@ -268,14 +345,7 @@ export function formatCoverageName(value: string) {
 }
 
 export function isCivilLiabilityCoverageType(value: string) {
-  const normalized = normalizeCoverageKey(value);
-
-  return (
-    normalized.includes("responsabilidad_civil") ||
-    normalized.includes("extracontractual") ||
-    normalized.includes("rce") ||
-    normalized.includes("plo")
-  );
+  return isCivilLiabilityName(value);
 }
 
 function normalizeCoverageKey(value: string) {

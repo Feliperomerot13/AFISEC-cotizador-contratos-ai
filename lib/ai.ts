@@ -8,6 +8,7 @@ import { AzureOpenAI } from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
 import { getServerEnv } from "@/lib/env";
+import { parseSpanishDate } from "@/lib/spanish-dates";
 import {
   aiExtractionSchema,
   amendmentExtractionSchema,
@@ -534,7 +535,7 @@ function buildExtractionPrompt(
     "Para Responsabilidad Civil Extracontractual, conserva subamparos en subamparos cuando el contrato liste coberturas adicionales. Si el contrato dice que cada subamparo tiene un porcentaje del PLO, guarda porcentaje_sublimite decimal, origen contrato y calculable false para esos subamparos informativos.",
     "Si un amparo tiene porcentaje, entrega porcentaje decimal: 0.30 significa 30% y 0.10 significa 10%.",
     "Si un amparo tiene cuantia fija explicita, entrega esa cuantia en cuantia_fija. Si es por empleado, por persona o por evento, conserva esa condicion en fuente_texto y agrega alerta.",
-    "Si una vigencia dice vigencia igual al termino, plazo, duracion o ejecucion del contrato y X dias/meses/años mas, usa tipo_vigencia contractual, base_vigencia fecha_fin_contrato y dias_adicionales equivalentes, preservando la frase fuente.",
+    "Si una vigencia dice vigencia igual al termino, plazo, duracion o ejecucion del contrato y X dias/meses/años mas, usa tipo_vigencia contractual, base_vigencia fecha_fin_contrato y periodo_adicional con la cantidad y la unidad (dias, meses o anios) exactamente como aparecen en el texto, sin convertir meses o años a días, preservando la frase fuente. Si el periodo está en días hábiles, repórtalo en días y agrega una alerta.",
     "Solo usa tipo_vigencia post_contractual si la cobertura inicia claramente despues de terminar el contrato, por ejemplo desde la terminacion, liquidacion, acta de recibo final o posterior a la terminacion.",
     "Si una vigencia se cuenta desde Acta de Recibo Final, usa base_vigencia acta_recibo_final y no inventes fecha_desde ni fecha_hasta.",
     "No calcules valor asegurado desde porcentaje por valor del contrato. valor_asegurado debe ser null salvo que el contrato indique una cuantia asegurada explicita; en ese caso pon la cuantia en cuantia_fija.",
@@ -586,7 +587,7 @@ export async function extractStructuredContract(
             "Si el plazo depende del Acta de Inicio y no hay fecha real del acta, usa fecha de firma, suscripcion o perfeccionamiento como fecha_inicio provisional para cotizacion cuando aparezca, conserva la fuente y alerta que debe ajustarse al acta real.",
             "Los porcentajes deben entregarse como decimal: 0.30 significa 30%.",
             "Para amparos, no calcules valor asegurado, fecha desde ni fecha hasta finales. Extrae únicamente reglas, datos explícitos y evidencia textual.",
-            "Para garantias, extrae tipo_amparo, porcentaje, cuantia_fija, tipo_vigencia, base_vigencia, dias_adicionales, fechas explícitas si aparecen, fuente_texto, fuente_pagina y confianza.",
+            "Para garantias, extrae tipo_amparo, porcentaje, cuantia_fija, tipo_vigencia, base_vigencia, periodo_adicional (cantidad y unidad tal como aparecen en el texto), fechas explícitas si aparecen, fuente_texto, fuente_pagina y confianza.",
             "Genera resumen_documento como texto comercial breve basado solamente en campos y evidencias del documento.",
             "Para responsabilidad civil, si hay subamparos adicionales, extraelos dentro de subamparos. Solo PLO puede ser calculable=true; los demas subamparos deben ser calculable=false.",
             "Para buen manejo de anticipo, usa tipo_amparo buen_manejo_anticipo y conserva evidencia de anticipo, IVA y garantia en fuente_texto.",
@@ -613,7 +614,7 @@ export async function extractStructuredContract(
     lastRawContent = completion.choices[0]?.message.content ?? "";
 
     try {
-      const rawJson = JSON.parse(lastRawContent);
+      const rawJson = repairExtractionDates(JSON.parse(lastRawContent));
       const extraction = aiExtractionSchema.parse(rawJson);
 
       return {
@@ -711,7 +712,7 @@ export async function extractStructuredAmendment(
     lastRawContent = completion.choices[0]?.message.content ?? "";
 
     try {
-      const rawJson = JSON.parse(lastRawContent);
+      const rawJson = repairExtractionDates(JSON.parse(lastRawContent));
       const extraction = amendmentExtractionSchema.parse(rawJson);
 
       return {
@@ -737,6 +738,35 @@ export async function extractStructuredAmendment(
   throw new InvalidAIJsonError(
     `Azure OpenAI devolvió JSON de otrosí inválido: ${lastValidationError ?? "sin detalle"}`,
     lastRawContent,
+  );
+}
+
+// Si el modelo devuelve una fecha en texto largo en vez de ISO, se convierte antes de validar el esquema.
+// Solo se tocan campos de fecha; el resto de textos (objeto, plazo, fuentes) no se modifican.
+export function repairExtractionDates(value: unknown, parentKey = ""): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => repairExtractionDates(item, parentKey));
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
+      const isDateField =
+        (key === "valor" && parentKey.startsWith("fecha_")) ||
+        key.startsWith("fecha_");
+
+      if (isDateField && typeof entry === "string") {
+        return [
+          key,
+          /^\d{4}-\d{2}-\d{2}$/.test(entry) ? entry : parseSpanishDate(entry),
+        ];
+      }
+
+      return [key, repairExtractionDates(entry, key)];
+    }),
   );
 }
 

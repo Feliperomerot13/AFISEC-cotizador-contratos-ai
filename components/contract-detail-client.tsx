@@ -47,13 +47,20 @@ import {
   normalizeNumber as normalizeNumberValue,
   normalizeText as normalizeTextValue,
 } from "@/lib/normalizers";
+import { isCivilLiabilityName } from "@/lib/coverage-policy";
+import type { PeriodUnit } from "@/lib/spanish-dates";
 import {
-  calculateQuoteTotalsByBlock,
   formatCoverageName,
+  getCoveragePolicy,
   getQuoteSnapshot,
+  groupQuoteCoveragesByPolicy,
   quoteStatusLabel,
 } from "@/lib/quotes";
-import type { QuoteSnapshot, QuoteSnapshotSubcoverage } from "@/lib/quotes";
+import type {
+  QuotePolicyGroup,
+  QuoteSnapshot,
+  QuoteSnapshotSubcoverage,
+} from "@/lib/quotes";
 import type { AIExtraction } from "@/lib/schemas";
 import { AmendmentsPanel } from "@/components/amendments-panel";
 import { AiLoader } from "@/components/ai-loader";
@@ -88,6 +95,7 @@ type ContractForm = {
   plazo_dias: string;
   plazo: string;
   renovable_automaticamente: "si" | "no";
+  origen_manual: boolean;
   contratante: string;
   contratante_nit: string;
   contratista: string;
@@ -117,7 +125,8 @@ type EditableAmparo = {
   fecha_desde_manual: boolean;
   fecha_hasta: string;
   fecha_hasta_manual: boolean;
-  dias_adicionales: string;
+  periodo_cantidad: string;
+  periodo_unidad: PeriodUnit;
   dias_vigencia: string;
   prima_neta: string;
   prima_neta_manual: string;
@@ -165,6 +174,7 @@ const emptyForm: ContractForm = {
   plazo_dias: "",
   plazo: "",
   renovable_automaticamente: "no",
+  origen_manual: false,
   contratante: "",
   contratante_nit: "",
   contratista: "",
@@ -336,6 +346,8 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                 : null,
               fecha_hasta_manual: amparo.fecha_hasta_manual,
               dias_adicionales: calculation.dias_adicionales,
+              periodo_adicional_cantidad: calculation.periodo_adicional_cantidad,
+              periodo_adicional_unidad: calculation.periodo_adicional_unidad,
               fuente_pagina: integerOrNull(amparo.fuente_pagina),
               fuente_texto: amparo.fuente_texto || null,
               subamparos: calculation.subamparos,
@@ -598,8 +610,12 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               value={detail.contract.numero_contrato ?? "Sin número"}
             />
             <Metadata
-              label="Tipo documental"
-              value={firstDocument?.tipo_documento ?? "Sin documento"}
+              label="Origen"
+              value={
+                detail.contract.origen === "manual"
+                  ? "Nueva cotización (sin documento)"
+                  : (firstDocument?.tipo_documento ?? "Sin documento")
+              }
             />
             <Metadata label="Comercial" value={detail.client.ejecutivo} />
           </dl>
@@ -1150,22 +1166,45 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                     ) : null}
                   </div>
 
-                  <div className="mt-4 grid gap-4 md:grid-cols-[0.5fr_1.5fr_auto] md:items-end">
-                    <EditableAmparoField
-                      label="Días adicionales"
-                      type="text"
-                      inputMode="numeric"
-                      value={amparo.dias_adicionales}
-                      onChange={(value) =>
-                        updateAmparo(index, "dias_adicionales", value)
-                      }
-                      disabled={amparo.fecha_hasta_manual}
-                      help={
-                        amparo.fecha_hasta_manual
-                          ? "No se aplica mientras la fecha fin manual esté activa."
-                          : undefined
-                      }
-                    />
+                  <div className="mt-4 grid gap-4 md:grid-cols-[1fr_1.5fr_auto] md:items-end">
+                    <div className="grid grid-cols-2 gap-3">
+                      <EditableAmparoField
+                        label="Periodo adicional"
+                        type="text"
+                        inputMode="numeric"
+                        value={amparo.periodo_cantidad}
+                        onChange={(value) =>
+                          updateAmparo(index, "periodo_cantidad", value)
+                        }
+                        disabled={amparo.fecha_hasta_manual}
+                        help={
+                          amparo.fecha_hasta_manual
+                            ? "No se aplica mientras la fecha fin manual esté activa."
+                            : calculation.dias_adicionales === null
+                              ? "Vacío aplica la regla automática."
+                              : `Equivale a ${calculation.dias_adicionales} días.`
+                        }
+                      />
+                      <label
+                        className={`space-y-2 ${amparo.fecha_hasta_manual ? "opacity-60" : ""}`}
+                      >
+                        <span className="text-sm font-medium text-neutral-700">
+                          Unidad
+                        </span>
+                        <select
+                          value={amparo.periodo_unidad}
+                          disabled={amparo.fecha_hasta_manual}
+                          onChange={(event) =>
+                            updateAmparo(index, "periodo_unidad", event.target.value)
+                          }
+                          className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 disabled:cursor-not-allowed disabled:bg-neutral-100"
+                        >
+                          <option value="dias">Días</option>
+                          <option value="meses">Meses</option>
+                          <option value="anios">Años</option>
+                        </select>
+                      </label>
+                    </div>
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-neutral-700">
                         Fuente
@@ -1827,7 +1866,7 @@ function QuotesHistoryTable({
             <th className="border-b border-neutral-200 px-3 py-2">Estado</th>
             <th className="border-b border-neutral-200 px-3 py-2">Generada</th>
             <th className="border-b border-neutral-200 px-3 py-2">Emitida</th>
-            <th className="border-b border-neutral-200 px-3 py-2 text-right">Total</th>
+            <th className="border-b border-neutral-200 px-3 py-2 text-right">Prima por póliza</th>
             <th className="border-b border-neutral-200 px-3 py-2 text-right">Acciones</th>
           </tr>
         </thead>
@@ -1860,7 +1899,14 @@ function QuotesHistoryTable({
                       : "Sin emitir"}
                 </td>
                 <td className="px-3 py-3 text-right font-semibold text-neutral-950">
-                  {formatCurrency(quote.total_prima, currency)}
+                  {formatPolicyTotals(snapshot, currency).map((total) => (
+                    <div key={total.key}>
+                      <span className="mr-2 text-xs font-medium text-neutral-500">
+                        {total.label}
+                      </span>
+                      {total.value}
+                    </div>
+                  ))}
                 </td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
@@ -1948,11 +1994,16 @@ function IssuedPolicySummary({
             <TableValue>
               {snapshot?.contrato.numero_contrato ?? "Sin número"}
             </TableValue>
-            <TableLabel>Total</TableLabel>
+            <TableLabel>Prima por póliza</TableLabel>
             <TableValue>
-              {formatCurrency(
-                snapshot?.totales.prima_total ?? quote.total_prima,
-                currency,
+              {snapshot ? (
+                formatPolicyTotals(snapshot, currency).map((total) => (
+                  <div key={total.key}>
+                    {total.label}: {total.value}
+                  </div>
+                ))
+              ) : (
+                formatCurrency(quote.total_prima, currency)
               )}
             </TableValue>
           </tr>
@@ -1999,13 +2050,47 @@ function QuoteCoverageTable({
   title: string;
 }) {
   const currency = snapshot.contrato.moneda;
-  const totalsByBlock = calculateQuoteTotalsByBlock(snapshot.amparos);
+  const groups = groupQuoteCoveragesByPolicy(snapshot.amparos);
 
   return (
-    <div className="mt-5 overflow-x-auto rounded-lg border border-neutral-200">
+    <div className="mt-5 space-y-4">
+      <p className="text-sm font-semibold text-neutral-950">
+        {title}: {quote.numero_cotizacion} v{quote.version}
+      </p>
+      {groups.length === 0 ? (
+        <p className="rounded-lg border border-neutral-200 px-3 py-4 text-sm text-neutral-500">
+          No hay amparos cotizados.
+        </p>
+      ) : (
+        groups.map((group) => (
+          <PolicyCoverageTable
+            key={group.poliza}
+            group={group}
+            currency={currency}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function PolicyCoverageTable({
+  group,
+  currency,
+}: {
+  group: QuotePolicyGroup;
+  currency: string;
+}) {
+  const subcoverages = group.amparos.flatMap((amparo) =>
+    getIncludedSubcoverages(amparo.subamparos),
+  );
+  const totalLabel = `Total ${group.nombre.charAt(0).toLowerCase()}${group.nombre.slice(1)}`;
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-neutral-200">
       <table className="min-w-[980px] w-full border-collapse text-left text-sm">
-        <caption className="bg-neutral-50 px-3 py-2 text-left text-sm font-semibold text-neutral-950">
-          {title}: {quote.numero_cotizacion} v{quote.version}
+        <caption className="bg-neutral-50 px-3 py-2 text-left text-sm font-semibold uppercase tracking-[0.06em] text-neutral-950">
+          {group.nombre}
         </caption>
         <thead className="bg-neutral-50 text-xs font-semibold uppercase tracking-[0.08em] text-neutral-500">
           <tr>
@@ -2020,106 +2105,67 @@ function QuoteCoverageTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-100 bg-white">
-          {snapshot.amparos.length === 0 ? (
-            <tr>
-              <td colSpan={8} className="px-3 py-4 text-sm text-neutral-500">
-                No hay amparos cotizados.
+          {group.amparos.map((amparo, index) => (
+            <tr key={`${amparo.tipo_amparo}-${index}`}>
+              <td className="px-3 py-3 font-medium text-neutral-950">
+                {formatCoverageName(amparo.tipo_amparo)}
+              </td>
+              <td className="px-3 py-3 text-right">
+                {formatCurrency(amparo.valor_asegurado, currency)}
+              </td>
+              <td className="px-3 py-3">{formatDate(amparo.fecha_desde)}</td>
+              <td className="px-3 py-3">{formatDate(amparo.fecha_hasta)}</td>
+              <td className="px-3 py-3 text-right">
+                {amparo.dias_vigencia ?? "Sin dato"}
+              </td>
+              <td className="px-3 py-3 text-right">
+                {formatCurrency(amparo.prima_neta, currency)}
+              </td>
+              <td className="px-3 py-3 text-right">
+                {formatCurrency(amparo.iva, currency)}
+              </td>
+              <td className="px-3 py-3 text-right font-semibold text-neutral-950">
+                {formatCurrency(amparo.prima_total, currency)}
               </td>
             </tr>
-          ) : (
-            snapshot.amparos.map((amparo, index) => {
-              const subcoverages = getIncludedSubcoverages(amparo.subamparos);
-              const showRceDetail =
-                isCivilLiabilityCoverage(amparo.tipo_amparo) &&
-                subcoverages.length > 0;
-
-              return (
-                <Fragment key={`${amparo.tipo_amparo}-${index}`}>
-                  <tr>
-                    <td className="px-3 py-3 font-medium text-neutral-950">
-                      {formatCoverageName(amparo.tipo_amparo)}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      {formatCurrency(amparo.valor_asegurado, currency)}
-                    </td>
-                    <td className="px-3 py-3">{formatDate(amparo.fecha_desde)}</td>
-                    <td className="px-3 py-3">{formatDate(amparo.fecha_hasta)}</td>
-                    <td className="px-3 py-3 text-right">
-                      {amparo.dias_vigencia ?? "Sin dato"}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      {formatCurrency(amparo.prima_neta, currency)}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      {formatCurrency(amparo.iva, currency)}
-                    </td>
-                    <td className="px-3 py-3 text-right font-semibold text-neutral-950">
-                      {formatCurrency(amparo.prima_total, currency)}
-                    </td>
-                  </tr>
-                  {showRceDetail ? (
-                    <tr className="bg-neutral-50">
-                      <td
-                        colSpan={8}
-                        className="px-3 py-2 text-xs leading-5 text-neutral-600"
-                      >
-                        <span className="font-semibold text-neutral-800">
-                          Subamparos incluidos:
-                        </span>{" "}
-                        {formatSubcoveragesForUi(subcoverages, currency)}
-                        <span className="ml-2">
-                          Sin prima individual; la prima corresponde a la línea
-                          principal RCE/PLO.
-                        </span>
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })
-          )}
+          ))}
+          {subcoverages.length > 0 ? (
+            <tr className="bg-neutral-50">
+              <td colSpan={8} className="px-3 py-2 text-xs leading-5 text-neutral-600">
+                <span className="font-semibold text-neutral-800">
+                  Subamparos incluidos:
+                </span>
+                <ul className="mt-1 space-y-0.5 pl-4">
+                  {subcoverages.map((subamparo) => (
+                    <li key={subamparo.nombre}>
+                      {subamparo.nombre}
+                      {subamparo.valor_sublimite === null
+                        ? ""
+                        : ` (${formatCurrency(subamparo.valor_sublimite, currency)})`}
+                      {subamparo.calculable ? " · línea principal" : " · sin prima individual"}
+                    </li>
+                  ))}
+                </ul>
+                <span className="mt-1 block">
+                  La prima de esta póliza corresponde a la línea principal RCE/PLO.
+                </span>
+              </td>
+            </tr>
+          ) : null}
         </tbody>
         <tfoot className="bg-neutral-50 text-sm font-semibold text-neutral-950">
           <tr>
             <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
-              Total garantías / cumplimiento
+              {totalLabel}
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.garantias.prima_neta, currency)}
+              {formatCurrency(group.totales.prima_neta, currency)}
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.garantias.iva, currency)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.garantias.prima_total, currency)}
-            </td>
-          </tr>
-          <tr>
-            <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
-              Total responsabilidad civil
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.responsabilidad_civil.prima_neta, currency)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.responsabilidad_civil.iva, currency)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.responsabilidad_civil.prima_total, currency)}
-            </td>
-          </tr>
-          <tr>
-            <td colSpan={5} className="border-t border-neutral-200 px-3 py-2 text-right">
-              Total general
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.general.prima_neta, currency)}
-            </td>
-            <td className="border-t border-neutral-200 px-3 py-2 text-right">
-              {formatCurrency(totalsByBlock.general.iva, currency)}
+              {formatCurrency(group.totales.iva, currency)}
             </td>
             <td className="border-t border-neutral-200 px-3 py-2 text-right text-[#d25b30]">
-              {formatCurrency(totalsByBlock.general.prima_total, currency)}
+              {formatCurrency(group.totales.prima_total, currency)}
             </td>
           </tr>
         </tfoot>
@@ -2130,7 +2176,7 @@ function QuoteCoverageTable({
 
 function getCivilLiabilitySubcoverages(snapshot: QuoteSnapshot) {
   return snapshot.amparos.flatMap((amparo) =>
-    isCivilLiabilityCoverage(amparo.tipo_amparo)
+    getCoveragePolicy(amparo) === "responsabilidad_civil"
       ? getIncludedSubcoverages(amparo.subamparos)
       : [],
   );
@@ -2144,17 +2190,17 @@ function getIncludedSubcoverages(
     : [];
 }
 
-function isCivilLiabilityCoverage(value: string) {
-  const normalized = normalizeText(value.replace(/_/g, " "));
-
-  return (
-    normalized.includes("responsabilidad civil") ||
-    normalized.includes("extracontractual") ||
-    normalized.includes("plo")
-  );
+function formatPolicyTotals(snapshot: QuoteSnapshot | null, currency: string) {
+  return groupQuoteCoveragesByPolicy(snapshot?.amparos ?? []).map((group) => ({
+    key: group.poliza,
+    label:
+      group.poliza === "responsabilidad_civil" ? "Resp. civil" : "Cumplimiento",
+    value: formatCurrency(group.totales.prima_total, currency),
+  }));
 }
 
 function formatSubcoveragesForUi(
+
   subcoverages: QuoteSnapshotSubcoverage[],
   currency: string,
 ) {
@@ -2659,6 +2705,7 @@ function contractToForm(
     plazo_dias: plazoDias === null ? "" : String(plazoDias),
     plazo: contract.plazo ?? "",
     renovable_automaticamente: contract.renovable_automaticamente ? "si" : "no",
+    origen_manual: contract.origen === "manual",
     contratante: contract.contratante ?? "",
     contratante_nit: contract.contratante_nit ?? "",
     contratista: contract.contratista ?? "",
@@ -2709,8 +2756,17 @@ function amparoToEditable(
       ? normalizeDateValue(amparo.fecha_hasta) ?? ""
       : "",
     fecha_hasta_manual: amparo.fecha_hasta_manual ?? false,
-    dias_adicionales:
-      amparo.dias_adicionales === null ? "" : String(amparo.dias_adicionales),
+    periodo_cantidad:
+      amparo.periodo_adicional_cantidad != null &&
+      amparo.periodo_adicional_unidad
+        ? String(amparo.periodo_adicional_cantidad)
+        : amparo.dias_adicionales === null
+          ? ""
+          : String(amparo.dias_adicionales),
+    periodo_unidad:
+      amparo.periodo_adicional_cantidad != null
+        ? (amparo.periodo_adicional_unidad ?? "dias")
+        : "dias",
     dias_vigencia:
       amparo.dias_vigencia === null ? "" : String(amparo.dias_vigencia),
     prima_neta: amparo.prima_neta === null ? "" : String(amparo.prima_neta),
@@ -2756,7 +2812,8 @@ function newAmparo(): EditableAmparo {
     fecha_desde_manual: false,
     fecha_hasta: "",
     fecha_hasta_manual: false,
-    dias_adicionales: "",
+    periodo_cantidad: "",
+    periodo_unidad: "dias",
     dias_vigencia: "",
     prima_neta: "",
     prima_neta_manual: "",
@@ -3338,7 +3395,8 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
         numberOrNull(amparo.iva_porcentaje) ?? DEFAULT_IVA_PERCENTAGE,
       tipo_vigencia: amparo.tipo_vigencia || null,
       base_vigencia: amparo.base_vigencia || null,
-      dias_adicionales: integerOrNull(amparo.dias_adicionales),
+      periodo_adicional_cantidad: integerOrNull(amparo.periodo_cantidad),
+      periodo_adicional_unidad: amparo.periodo_unidad,
       fecha_desde: amparo.fecha_desde_manual ? amparo.fecha_desde || null : null,
       fecha_desde_manual: amparo.fecha_desde_manual,
       fecha_hasta: amparo.fecha_hasta_manual ? amparo.fecha_hasta || null : null,
@@ -3356,6 +3414,7 @@ function calculateEditableAmparo(amparo: EditableAmparo, contract: ContractForm)
       ),
       fechaInicio: normalizeDateValue(contract.fecha_inicio),
       fechaFin: normalizeDateValue(contract.fecha_fin),
+      origenManual: contract.origen_manual,
     },
   );
 }
@@ -3411,7 +3470,7 @@ function findSuggestedRate(
     )?.tasa ?? null;
 
   return referencedRate ??
-    (isCivilLiabilityType(coverageType)
+    (isCivilLiabilityName(coverageType)
       ? DEFAULT_RCE_RATE
       : DEFAULT_COVERAGE_RATE);
 }
@@ -3459,17 +3518,6 @@ function parseSubamparos(value: Amparo["subamparos"]): CoverageSubamparo[] {
 
 function getCalculableSubamparo(subamparos: CoverageSubamparo[]) {
   return subamparos.find((subamparo) => subamparo.calculable) ?? null;
-}
-
-function isCivilLiabilityType(value: string) {
-  const normalized = normalizeText(value);
-
-  return (
-    normalized.includes("responsabilidad civil") ||
-    normalized.includes("extracontractual") ||
-    normalized.includes("plo") ||
-    normalized.includes("predios")
-  );
 }
 
 function formatPercent(value: number | null | undefined) {

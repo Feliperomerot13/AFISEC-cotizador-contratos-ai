@@ -1,6 +1,7 @@
 import { EXPIRATION_WINDOW_DAYS } from "@/lib/constants";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/api";
-import { contractListQuerySchema } from "@/lib/schemas";
+import { createOrReuseClient } from "@/lib/clients";
+import { contractListQuerySchema, newQuoteSchema } from "@/lib/schemas";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { normalizeText } from "@/lib/format";
 
@@ -113,6 +114,39 @@ export async function GET(request: Request) {
     return jsonOk({ contracts: records });
   } catch (error) {
     return jsonError(getErrorMessage(error));
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const input = newQuoteSchema.parse(await request.json());
+    const cliente = await createOrReuseClient({
+      nombre: input.nombreCliente,
+      nit: input.nitCliente,
+      ejecutivo: input.ejecutivo,
+    });
+    const { data: contract, error } = await getSupabaseAdmin()
+      .from("contratos")
+      .insert({
+        cliente_id: cliente.id,
+        estado: "pendiente_validacion",
+        origen: "manual",
+        extraido_ia: false,
+        contratante: input.contratante,
+        numero_contrato: input.numero_contrato,
+      })
+      .select("id")
+      .single();
+
+    if (error || !contract) {
+      throw new Error(
+        `Fallo al crear la cotización: ${error?.message ?? "sin detalle"}`,
+      );
+    }
+
+    return jsonOk({ contractId: contract.id, status: "pendiente_validacion" });
+  } catch (error) {
+    return jsonError(getErrorMessage(error), 400);
   }
 }
 

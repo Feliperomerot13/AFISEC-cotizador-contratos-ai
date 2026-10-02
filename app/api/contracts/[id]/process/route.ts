@@ -58,6 +58,45 @@ export async function POST(_request: Request, { params }: IdContext) {
       return jsonOk({ status: "otrosi_procesado", modification });
     }
 
+    const { data: baseContract, error: baseContractError } = await supabase
+      .from("contratos")
+      .select("origen")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (baseContractError) {
+      throw new Error(
+        `No se pudo validar el contrato: ${baseContractError.message}`,
+      );
+    }
+
+    if (baseContract?.origen === "manual" || !latestDocument) {
+      return jsonError(
+        "Esta cotización se creó sin documento y no se procesa con IA.",
+        409,
+      );
+    }
+
+    const { data: issuedBaseQuote, error: issuedBaseQuoteError } = await supabase
+      .from("cotizaciones")
+      .select("id")
+      .eq("contrato_id", id)
+      .eq("estado", "emitida")
+      .maybeSingle();
+
+    if (issuedBaseQuoteError) {
+      throw new Error(
+        `Fallo al validar póliza emitida: ${issuedBaseQuoteError.message}`,
+      );
+    }
+
+    if (issuedBaseQuote) {
+      return jsonError(
+        "La póliza base emitida bloquea el reprocesamiento del contrato.",
+        409,
+      );
+    }
+
     const { error } = await supabase
       .from("contratos")
       .update({
