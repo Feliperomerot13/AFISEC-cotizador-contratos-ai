@@ -1,5 +1,37 @@
 # Historial de versiones
 
+## [0.6.0] - 2026-10-01
+
+### Cambiado
+
+- Revisión de contrato (`/contratos/[id]?tab=contrato`) simplificada:
+  - encabezado compacto con origen, comercial, documento y fecha de carga; se
+    elimina el panel lateral "Documento" y "Eliminar contrato" pasa al menú "⋯";
+  - formulario de datos del contrato a ancho completo, con campos secundarios
+    bajo "Más detalles";
+  - resumen IA colapsable (oculto en cotizaciones manuales);
+  - evidencia IA como "Pág. N · Ver fuente" bajo demanda;
+  - amparos agrupados por póliza con totales por póliza (sin total general),
+    como tarjeta resumen con estado Listo/Revisar y editor expandible;
+  - modo de valor asegurado (porcentaje, cuantía o valor manual) muestra solo el
+    campo aplicable; fechas manuales y detalle/evidencia bajo demanda;
+  - subamparos RCE en lista compacta;
+  - confianza IA en solo lectura (punto verde, ámbar o rojo); no se muestra en
+    cotizaciones manuales;
+  - barra de acciones fija con "Validado por", estado de cambios y errores de
+    validación junto al botón.
+- "Validado por" se preselecciona con la ejecutiva del cliente.
+
+### Agregado
+
+- Control de cambios sin validar: "Generar cotización" se deshabilita hasta
+  volver a validar y se avisa al abandonar la página con cambios pendientes.
+
+### Corregido
+
+- Los cambios sin validar ya no se sobrescriben al ejecutar acciones de
+  cotización u otrosíes.
+
 ## [0.5.1] - 2026-10-01
 
 ### Cambiado

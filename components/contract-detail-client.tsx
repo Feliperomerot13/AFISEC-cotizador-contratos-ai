@@ -2,11 +2,12 @@
 
 import { useRouter } from "next/navigation";
 import {
-  Fragment,
   FormEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from "react";
 import { Loader2 } from "lucide-react";
@@ -47,7 +48,13 @@ import {
   normalizeNumber as normalizeNumberValue,
   normalizeText as normalizeTextValue,
 } from "@/lib/normalizers";
-import { isCivilLiabilityName } from "@/lib/coverage-policy";
+import {
+  COVERAGE_POLICY_LABELS,
+  COVERAGE_POLICY_ORDER,
+  classifyCoveragePolicy,
+  isCivilLiabilityName,
+  type CoveragePolicy,
+} from "@/lib/coverage-policy";
 import type { PeriodUnit } from "@/lib/spanish-dates";
 import {
   formatCoverageName,
@@ -65,7 +72,12 @@ import type { AIExtraction } from "@/lib/schemas";
 import { AmendmentsPanel } from "@/components/amendments-panel";
 import { AiLoader } from "@/components/ai-loader";
 import { PdfPreviewDialog } from "@/components/pdf-preview-dialog";
-import { ConfidenceBadge, StatusBadge } from "@/components/status-badge";
+import {
+  ConfidenceDot,
+  ReviewChip,
+  getConfidenceLabel,
+} from "@/components/review-ui";
+import { StatusBadge } from "@/components/status-badge";
 
 type DocumentMetadata = Omit<Documento, "storage_path">;
 
@@ -105,6 +117,8 @@ type ContractForm = {
 type EditableContractFormKey = Exclude<keyof ContractForm, "fecha_fin_manual">;
 
 type EditableAmparo = {
+  // Clave estable en el cliente: la fila conserva su estado de UI aunque cambie el orden o se quite otra.
+  uid: string;
   id?: string | number;
   tipo_amparo: string;
   porcentaje: string;
@@ -192,33 +206,109 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   const [quoteAction, setQuoteAction] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState("");
   const [activeTab, setActiveTab] = useState<ContractDetailTab>(
     getInitialContractDetailTab,
   );
 
-  const applyDetail = useCallback((nextDetail: DetailResponse) => {
-    setDetail(nextDetail);
-    setForm(
-      contractToForm(
+  const dirtyRef = useRef(false);
+  // Mientras el editor de un amparo está abierto conserva su grupo para no perder el foco al cambiar el tipo.
+  const [frozenPolicies, setFrozenPolicies] = useState<
+    Record<string, CoveragePolicy>
+  >({});
+  const setAmparoEditing = useCallback(
+    (uid: string, editing: boolean, policy: CoveragePolicy) => {
+      setFrozenPolicies((current) => {
+        if (!editing) {
+          if (!(uid in current)) {
+            return current;
+          }
+
+          const rest = { ...current };
+          delete rest[uid];
+
+          return rest;
+        }
+
+        return uid in current ? current : { ...current, [uid]: policy };
+      });
+    },
+    [],
+  );
+
+  // keepEdits conserva lo que el usuario ya editó cuando solo cambian cotizaciones u otrosíes.
+  const applyDetail = useCallback(
+    (nextDetail: DetailResponse, keepEdits = false) => {
+      setDetail(nextDetail);
+
+      if (keepEdits) {
+        return;
+      }
+
+      const nextForm = contractToForm(
         nextDetail.contract,
         nextDetail.extraction,
         nextDetail.amparos,
-      ),
-    );
-    setAmparos(
-      nextDetail.amparos.map((amparo) =>
+      );
+      const nextAmparos = nextDetail.amparos.map((amparo) =>
         amparoToEditable(amparo, nextDetail.tasasReferencia),
-      ),
-    );
-    setValidadoPor(normalizeExecutiveForForm(nextDetail.contract.validado_por));
-  }, []);
+      );
 
-  const loadDetail = useCallback(async () => {
-    const nextDetail = await fetchContractDetail(contractId);
-    applyDetail(nextDetail);
-    setError(null);
-  }, [applyDetail, contractId]);
+      setForm(nextForm);
+      setAmparos(nextAmparos);
+      const nextValidator = getInitialValidator(nextDetail);
+
+      setBaseline(
+        JSON.stringify({
+          form: nextForm,
+          amparos: nextAmparos,
+          validadoPor: nextValidator,
+        }),
+      );
+      setValidationError(null);
+      setValidadoPor(nextValidator);
+    },
+    [],
+  );
+
+  const reloadDetail = useCallback(
+    async (keepEdits: boolean) => {
+      const nextDetail = await fetchContractDetail(contractId);
+      applyDetail(nextDetail, keepEdits);
+      setError(null);
+    },
+    [applyDetail, contractId],
+  );
+
+  const loadDetail = useCallback(
+    () => reloadDetail(dirtyRef.current),
+    [reloadDetail],
+  );
+
+  const currentSnapshot = useMemo(
+    () => JSON.stringify({ form, amparos, validadoPor }),
+    [form, amparos, validadoPor],
+  );
+  const dirty = detail !== null && baseline !== "" && currentSnapshot !== baseline;
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+
+    if (!dirty) {
+      return;
+    }
+
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [dirty]);
 
   useEffect(() => {
     let isMounted = true;
@@ -266,13 +356,18 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   }, [contractId, detail, loadDetail]);
 
   const ai = detail?.extraction ?? null;
-  const firstDocument = detail?.documents[0] ?? null;
+  const baseDocument =
+    detail?.documents.find((document) => document.tipo_documento !== "otrosi") ??
+    detail?.documents[0] ??
+    null;
+  const isManual = detail?.contract.origen === "manual";
   const startDependsOnActaInicio = contractDependsOnActaInicio(form, ai);
 
   async function onValidate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
     setError(null);
+    setValidationError(null);
     setSuccess(null);
 
     try {
@@ -365,9 +460,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
       }
 
       setSuccess("Contrato validado correctamente.");
-      await loadDetail();
+      await reloadDetail(false);
     } catch (saveError) {
-      setError(
+      setValidationError(
         saveError instanceof Error
           ? saveError.message
           : "Ocurrió un error inesperado.",
@@ -573,7 +668,26 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         ["endoso_emitido", "aplicada"].includes(modification.estado),
     );
   const canGenerateQuote =
-    detail.contract.estado === "validado" && !isIssuedLocked;
+    detail.contract.estado === "validado" && !isIssuedLocked && !dirty;
+  const amparoViews = amparos.map((amparo, index) => ({
+    amparo,
+    index,
+    calculation: calculateEditableAmparo(amparo, form),
+  }));
+  const policyGroups = COVERAGE_POLICY_ORDER.map((policy, policyIndex) => {
+    const items = amparoViews.filter(
+      (view) =>
+        (frozenPolicies[view.amparo.uid] ??
+          classifyCoveragePolicy(view.calculation.tipo_amparo)) === policy,
+    );
+
+    return {
+      policy,
+      policyIndex,
+      items,
+      totals: summarizePremiums(items.map((item) => item.calculation)),
+    };
+  });
   const renewalExpirationAlert = getRenewalExpirationAlert(
     detail.contract,
     detail.amparos,
@@ -594,17 +708,15 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#d25b30]">
             Revisión
           </p>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-950 sm:text-3xl">
             {detail.client.nombre}
           </h2>
-          <p className="mt-2 text-sm text-neutral-500">
-            NIT {detail.client.nit} · {detail.client.ejecutivo}
-          </p>
-          <dl className="mt-4 grid gap-3 text-sm text-neutral-600 sm:grid-cols-3">
+          <p className="mt-2 text-sm text-neutral-500">NIT {detail.client.nit}</p>
+          <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-sm text-neutral-600">
             <Metadata
               label="Contrato / orden"
               value={detail.contract.numero_contrato ?? "Sin número"}
@@ -612,32 +724,46 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             <Metadata
               label="Origen"
               value={
-                detail.contract.origen === "manual"
-                  ? "Nueva cotización (sin documento)"
-                  : (firstDocument?.tipo_documento ?? "Sin documento")
+                isManual
+                  ? "Nueva cotización · Sin documento"
+                  : (documentTypeLabels[baseDocument?.tipo_documento ?? ""] ??
+                    "Sin documento")
               }
             />
             <Metadata label="Comercial" value={detail.client.ejecutivo} />
+            {!isManual && baseDocument ? (
+              <Metadata
+                label="Documento"
+                value={`${baseDocument.nombre_archivo} · cargado ${formatDate(baseDocument.fecha_carga)}`}
+              />
+            ) : null}
           </dl>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-3">
           <StatusBadge state={detail.contract.estado} />
-          <p className="text-sm text-neutral-500">
-            Procesado: {formatDate(detail.contract.fecha_procesamiento)}
-          </p>
-          <button
-            type="button"
-            disabled={hasIssuedHistory || isDeleting}
-            onClick={onDeleteContract}
-            title={
-              hasIssuedHistory
-                ? "Los contratos con trazabilidad emitida no pueden eliminarse."
-                : "Eliminar contrato no emitido"
-            }
-            className="h-9 rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-neutral-200 disabled:text-neutral-400"
-          >
-            {isDeleting ? "Eliminando..." : "Eliminar contrato"}
-          </button>
+          <details className="relative">
+            <summary
+              aria-label="Más acciones"
+              className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-lg border border-neutral-200 bg-white text-lg leading-none text-neutral-600 transition hover:bg-neutral-50 [&::-webkit-details-marker]:hidden"
+            >
+              ⋯
+            </summary>
+            <div className="absolute right-0 z-30 mt-2 w-56 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg">
+              <button
+                type="button"
+                disabled={hasIssuedHistory || isDeleting}
+                onClick={onDeleteContract}
+                title={
+                  hasIssuedHistory
+                    ? "Los contratos con trazabilidad emitida no pueden eliminarse."
+                    : "Eliminar contrato no emitido"
+                }
+                className="h-9 w-full rounded-md px-3 text-left text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-neutral-400 disabled:hover:bg-transparent"
+              >
+                {isDeleting ? "Eliminando..." : "Eliminar contrato"}
+              </button>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -672,7 +798,9 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
         </div>
       ) : null}
 
-      <DocumentSummary summary={detail.contract.resumen_documento_ia} />
+      {isManual ? null : (
+        <DocumentSummary summary={detail.contract.resumen_documento_ia} />
+      )}
 
       <ContractDetailTabs
         activeTab={activeTab}
@@ -698,19 +826,19 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           disabled={isIssuedLocked}
           className="space-y-6 disabled:opacity-70"
         >
-      <section className="grid gap-6 lg:grid-cols-[1fr_0.45fr]">
-        <div className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-neutral-950">
-            Datos del contrato
-          </h2>
-          <div className="mt-5 grid gap-5 md:grid-cols-2">
-            <EditableField
-              label="Número"
-              value={form.numero_contrato}
-              onChange={(value) => updateForm(setForm, "numero_contrato", value)}
-              source={ai?.numero_contrato}
-            />
-            <label className="space-y-2">
+      <section className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-neutral-950">
+          Datos del contrato
+        </h2>
+        <div className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+          <EditableField
+            label="Número"
+            value={form.numero_contrato}
+            onChange={(value) => updateForm(setForm, "numero_contrato", value)}
+            source={ai?.numero_contrato}
+          />
+          <div className="space-y-2">
+            <label className="block space-y-2">
               <span className="text-sm font-medium text-neutral-700">Tipo</span>
               <select
                 value={form.tipo_contrato}
@@ -723,187 +851,165 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
                 <option value="estatal">Estatal</option>
                 <option value="particular">Particular</option>
               </select>
-              <SourceBlock source={ai?.tipo_contrato} />
             </label>
-            <EditableField
-              label="Valor del contrato"
-              type="text"
-              inputMode="decimal"
-              value={form.valor_contrato}
-              onChange={(value) => updateForm(setForm, "valor_contrato", value)}
-              onBlur={(value) =>
-                updateForm(setForm, "valor_contrato", formatCurrencyInputValue(value))
-              }
-              source={ai?.valor_contrato}
-            />
-            <EditableField
-              label="Base de cálculo para amparos"
-              type="text"
-              inputMode="decimal"
-              value={form.base_calculo_amparos}
-              onChange={(value) =>
-                updateForm(setForm, "base_calculo_amparos", value)
-              }
-              onBlur={(value) =>
-                updateForm(
-                  setForm,
-                  "base_calculo_amparos",
-                  formatCurrencyInputValue(value),
-                )
-              }
-              source={ai?.valor_contrato}
-            />
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-neutral-700">
-                Base incluye IVA
-              </span>
-              <select
-                value={form.base_calculo_incluye_iva}
-                onChange={(event) =>
-                  updateForm(
-                    setForm,
-                    "base_calculo_incluye_iva",
-                    event.target.value,
-                  )
-                }
-                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-              >
-                <option value="si">Sí</option>
-                <option value="no">No</option>
-                <option value="no_determinado">No determinado</option>
-              </select>
-              <SourceBlock source={ai?.valor_contrato} />
-            </label>
-            <EditableField
-              label="Moneda"
-              value={form.moneda}
-              onChange={(value) => updateForm(setForm, "moneda", value)}
-              source={ai?.valor_contrato}
-            />
-            <EditableField
-              label="Fecha inicio"
-              value={form.fecha_inicio}
-              onChange={(value) => updateForm(setForm, "fecha_inicio", value)}
-              source={ai?.fecha_inicio}
-              asDate
-            />
-            <EditableField
-              label="Plazo en días"
-              type="number"
-              value={form.plazo_dias}
-              onChange={(value) => updateForm(setForm, "plazo_dias", value)}
-              source={ai?.plazo}
-            />
-            <EditableField
-              label="Fecha fin calculada"
-              value={form.fecha_fin}
-              onChange={(value) => updateForm(setForm, "fecha_fin", value)}
-              source={ai?.fecha_fin}
-              asDate
-            />
-            <EditableField
-              label="Plazo"
-              value={form.plazo}
-              onChange={(value) => updateForm(setForm, "plazo", value)}
-              source={ai?.plazo}
-            />
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-neutral-700">
-                Renovable automáticamente
-              </span>
-              <select
-                value={form.renovable_automaticamente}
-                onChange={(event) =>
-                  updateForm(
-                    setForm,
-                    "renovable_automaticamente",
-                    event.target.value,
-                  )
-                }
-                className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-              >
-                <option value="no">No</option>
-                <option value="si">Sí</option>
-              </select>
-              <p className="text-xs leading-5 text-neutral-500">
-                La revisión manual prevalece sobre cualquier sugerencia del
-                documento.
-              </p>
-            </label>
+            <SourceBlock source={ai?.tipo_contrato} />
           </div>
-          <ContractDateStatus form={form} />
-          {startDependsOnActaInicio ? (
-            <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              Fecha de inicio depende del Acta de Inicio. No se inventa fecha:
-              ingrese fecha de acta/inicio y plazo, o fecha inicio y fecha fin
-              manuales. Una fecha válida se usará para recalcular vigencias.
-            </div>
-          ) : null}
-          {form.fecha_fin_manual ? (
-            <div className="mt-3 flex flex-col gap-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700 md:flex-row md:items-center md:justify-between">
-              <span>
-                La fecha fin fue editada manualmente; se respetará ese valor.
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setForm((current) => recalculateContractEndDate(current, true))
-                }
-                className="h-9 rounded-lg border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-100"
-              >
-                Recalcular con plazo
-              </button>
-            </div>
-          ) : null}
-          <label className="mt-5 block space-y-2">
+          <EditableField
+            label="Valor del contrato"
+            type="text"
+            inputMode="decimal"
+            value={form.valor_contrato}
+            onChange={(value) => updateForm(setForm, "valor_contrato", value)}
+            onBlur={(value) =>
+              updateForm(setForm, "valor_contrato", formatCurrencyInputValue(value))
+            }
+            source={ai?.valor_contrato}
+          />
+          <EditableField
+            label="Base de cálculo para amparos"
+            type="text"
+            inputMode="decimal"
+            value={form.base_calculo_amparos}
+            onChange={(value) =>
+              updateForm(setForm, "base_calculo_amparos", value)
+            }
+            onBlur={(value) =>
+              updateForm(
+                setForm,
+                "base_calculo_amparos",
+                formatCurrencyInputValue(value),
+              )
+            }
+            placeholder="Igual al valor del contrato"
+          />
+          <EditableField
+            label="Fecha inicio"
+            value={form.fecha_inicio}
+            onChange={(value) => updateForm(setForm, "fecha_inicio", value)}
+            source={ai?.fecha_inicio}
+            asDate
+          />
+          <EditableField
+            label="Plazo en días"
+            type="number"
+            value={form.plazo_dias}
+            onChange={(value) => updateForm(setForm, "plazo_dias", value)}
+          />
+          <EditableField
+            label="Fecha fin"
+            value={form.fecha_fin}
+            onChange={(value) => updateForm(setForm, "fecha_fin", value)}
+            source={ai?.fecha_fin}
+            asDate
+          />
+        </div>
+        <ContractDateStatus form={form} />
+        {startDependsOnActaInicio ? (
+          <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            Fecha de inicio depende del Acta de Inicio. No se inventa fecha:
+            ingrese fecha de acta/inicio y plazo, o fecha inicio y fecha fin
+            manuales. Una fecha válida se usará para recalcular vigencias.
+          </div>
+        ) : null}
+        {form.fecha_fin_manual ? (
+          <div className="mt-3 flex flex-col gap-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700 md:flex-row md:items-center md:justify-between">
+            <span>
+              La fecha fin fue editada manualmente; se respetará ese valor.
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setForm((current) => recalculateContractEndDate(current, true))
+              }
+              className="h-9 rounded-lg border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-100"
+            >
+              Recalcular con plazo
+            </button>
+          </div>
+        ) : null}
+        <div className="mt-5 space-y-2">
+          <label className="block space-y-2">
             <span className="text-sm font-medium text-neutral-700">Objeto</span>
             <textarea
               value={form.objeto}
               onChange={(event) => updateForm(setForm, "objeto", event.target.value)}
-              rows={4}
+              rows={3}
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             />
-            <SourceBlock source={ai?.objeto} />
           </label>
+          <SourceBlock source={ai?.objeto} />
         </div>
 
-        <aside className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-neutral-950">Documento</h2>
-          {firstDocument ? (
-            <dl className="mt-5 space-y-4 text-sm">
-              <Metadata label="Archivo" value={firstDocument.nombre_archivo} />
-              <Metadata label="Tipo" value={firstDocument.tipo_documento} />
-              <Metadata label="MIME" value={firstDocument.mime_type ?? "Sin dato"} />
-              <Metadata
-                label="Tamaño"
-                value={
-                  firstDocument.size_bytes === null
-                    ? "Sin dato"
-                    : `${Math.round(firstDocument.size_bytes / 1024)} KB`
-                }
-              />
-              <Metadata label="Cargado" value={formatDate(firstDocument.fecha_carga)} />
-            </dl>
-          ) : (
-            <p className="mt-4 text-sm text-neutral-500">Sin documento asociado.</p>
-          )}
-          <div className="mt-6 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
-            <p className="text-sm font-medium text-neutral-700">
-              Base de cálculo
-            </p>
-            <p className="mt-2 text-xl font-semibold text-neutral-950">
-              {formatCurrency(
-                getCalculationBase(form),
-                form.moneda || "COP",
-              )}
-            </p>
+        <details className="mt-5 rounded-lg border border-neutral-200 bg-neutral-50">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-neutral-800">
+            Más detalles
+          </summary>
+          <div className="grid gap-5 border-t border-neutral-200 p-4 md:grid-cols-2 xl:grid-cols-4">
+            <EditableField
+              label="Moneda"
+              value={form.moneda}
+              onChange={(value) => updateForm(setForm, "moneda", value)}
+            />
+            <div className="space-y-2">
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-neutral-700">
+                  Base incluye IVA
+                </span>
+                <select
+                  value={form.base_calculo_incluye_iva}
+                  onChange={(event) =>
+                    updateForm(
+                      setForm,
+                      "base_calculo_incluye_iva",
+                      event.target.value,
+                    )
+                  }
+                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                >
+                  <option value="si">Sí</option>
+                  <option value="no">No</option>
+                  <option value="no_determinado">No determinado</option>
+                </select>
+              </label>
+            </div>
+            <EditableField
+              label="Plazo (texto del contrato)"
+              value={form.plazo}
+              onChange={(value) => updateForm(setForm, "plazo", value)}
+              source={ai?.plazo}
+            />
+            <div className="space-y-2">
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-neutral-700">
+                  Renovable automáticamente
+                </span>
+                <select
+                  value={form.renovable_automaticamente}
+                  onChange={(event) =>
+                    updateForm(
+                      setForm,
+                      "renovable_automaticamente",
+                      event.target.value,
+                    )
+                  }
+                  className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                >
+                  <option value="no">No</option>
+                  <option value="si">Sí</option>
+                </select>
+              </label>
+              <p className="text-xs leading-5 text-neutral-500">
+                La revisión manual prevalece sobre cualquier sugerencia del
+                documento.
+              </p>
+            </div>
           </div>
-        </aside>
+        </details>
       </section>
 
       <section className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-neutral-950">Partes</h2>
-        <div className="mt-5 grid gap-5 md:grid-cols-2">
+        <div className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
           <EditableField
             label="Contratante"
             value={form.contratante}
@@ -914,7 +1020,6 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             label="NIT contratante"
             value={form.contratante_nit}
             onChange={(value) => updateForm(setForm, "contratante_nit", value)}
-            source={ai?.contratante}
           />
           <EditableField
             label="Contratista"
@@ -926,7 +1031,6 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
             label="NIT contratista"
             value={form.contratista_nit}
             onChange={(value) => updateForm(setForm, "contratista_nit", value)}
-            source={ai?.contratista}
           />
         </div>
       </section>
@@ -943,503 +1047,60 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
           </button>
         </div>
 
-        <div className="mt-5 space-y-5">
+        <div className="mt-5 flex flex-col gap-3">
           {amparos.length === 0 ? (
-            <p className="text-sm text-neutral-500">No se detectaron amparos.</p>
-          ) : (
-            amparos.map((amparo, index) => {
-              const calculation = calculateEditableAmparo(amparo, form);
-              const calculableSubamparo = getCalculableSubamparo(
-                calculation.subamparos,
-              );
-              const isAdvanceCoverage =
-                calculation.tipo_amparo === "buen_manejo_anticipo";
-              const rateIssue = getRateInputIssue(amparo.tasa);
-              const coverageMode = getEditableCoverageMode(amparo, calculation);
-              const isPercentageMode = coverageMode === "porcentaje_valor_contrato";
-              const isFixedMode = coverageMode === "cuantia_fija";
-              const isDerivedInsuredValue =
-                isPercentageMode || isFixedMode || isAdvanceCoverage;
-
-              return (
-                <div
-                  key={amparo.id ?? index}
-                  className="rounded-lg border border-neutral-200 bg-neutral-50 p-4"
-                >
-                  <div className="grid gap-4 md:grid-cols-4">
-                    <EditableAmparoField
-                      label="Tipo"
-                      value={amparo.tipo_amparo}
-                      onChange={(value) => updateAmparo(index, "tipo_amparo", value)}
-                    />
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-neutral-700">
-                        Modo cálculo
-                      </span>
-                      <select
-                        value={coverageMode}
-                        onChange={(event) =>
-                          updateAmparo(index, "modo_calculo", event.target.value)
-                        }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                      >
-                        <option value="porcentaje_valor_contrato">
-                          Porcentaje sobre base
-                        </option>
-                        <option value="cuantia_fija">Cuantía fija</option>
-                        <option value="valor_asegurado_manual">
-                          Valor asegurado manual
-                        </option>
-                      </select>
-                    </label>
-                    <EditableAmparoField
-                      label={isAdvanceCoverage ? "Porcentaje anticipo %" : "Porcentaje %"}
-                      type="text"
-                      inputMode="decimal"
-                      value={
-                        isAdvanceCoverage
-                          ? percentFromDecimal(calculation.porcentaje)
-                          : amparo.porcentaje
-                      }
-                      onChange={(value) => updateAmparo(index, "porcentaje", value)}
-                      disabled={isFixedMode}
-                      help={
-                        isFixedMode
-                          ? "No aplica mientras el modo sea cuantía fija."
-                          : "Digite 20 para representar 20%."
-                      }
-                    />
-                    <EditableAmparoField
-                      label="Valor asegurado"
-                      type="text"
-                      inputMode="decimal"
-                      value={
-                        isDerivedInsuredValue
-                          ? formatCurrency(calculation.valor_asegurado, form.moneda || "COP")
-                          : amparo.valor_asegurado
-                      }
-                      onChange={(value) =>
-                        updateAmparo(index, "valor_asegurado", value)
-                      }
-                      onBlur={(value) =>
-                        updateAmparo(index, "valor_asegurado", formatCurrencyInputValue(value))
-                      }
-                      disabled={isDerivedInsuredValue}
-                      help={
-                        isPercentageMode
-                          ? "Se calcula automáticamente desde la base y el porcentaje."
-                          : undefined
-                      }
-                    />
-                    {isAdvanceCoverage ? (
-                      <EditableAmparoField
-                        label="Base/valor anticipo"
-                        type="text"
-                        inputMode="decimal"
-                        value={amparo.valor_base_calculo}
-                        onChange={(value) =>
-                          updateAmparo(index, "valor_base_calculo", value)
-                        }
-                        onBlur={(value) =>
-                          updateAmparo(index, "valor_base_calculo", formatCurrencyInputValue(value))
-                        }
-                        help="Edite este valor si la base del anticipo no corresponde al valor total del contrato."
-                      />
-                    ) : null}
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-neutral-700">
-                        Confianza
-                      </span>
-                      <select
-                        value={amparo.confianza}
-                        onChange={(event) =>
-                          updateAmparo(index, "confianza", event.target.value)
-                        }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                      >
-                        <option value="">Sin dato</option>
-                        <option value="alta">alta</option>
-                        <option value="media">media</option>
-                        <option value="baja">baja</option>
-                      </select>
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-neutral-700">
-                        Vigencia
-                      </span>
-                      <select
-                        value={amparo.tipo_vigencia}
-                        onChange={(event) =>
-                          updateAmparo(index, "tipo_vigencia", event.target.value)
-                        }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                      >
-                        <option value="">Sin dato</option>
-                        <option value="contractual">Contractual</option>
-                        <option value="post_contractual">Post contractual</option>
-                      </select>
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-neutral-700">
-                        Base vigencia
-                      </span>
-                      <select
-                        value={amparo.base_vigencia}
-                        onChange={(event) =>
-                          updateAmparo(index, "base_vigencia", event.target.value)
-                        }
-                        className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                      >
-                        <option value="">Sin dato</option>
-                        <option value="fecha_inicio_contrato">
-                          Inicio contrato
-                        </option>
-                        <option value="fecha_fin_contrato">Fin contrato</option>
-                        <option value="acta_recibo_final">
-                          Acta recibo final
-                        </option>
-                        <option value="firma_contrato">Firma contrato</option>
-                        <option value="otra">Otra</option>
-                      </select>
-                    </label>
-                    <EditableAmparoField
-                      label="Cuantía fija"
-                      type="text"
-                      inputMode="decimal"
-                      value={amparo.cuantia_fija}
-                      onChange={(value) => updateAmparo(index, "cuantia_fija", value)}
-                      onBlur={(value) =>
-                        updateAmparo(index, "cuantia_fija", formatCurrencyInputValue(value))
-                      }
-                      disabled={isPercentageMode}
-                      help={
-                        isPercentageMode
-                          ? "No aplica mientras el modo sea porcentaje sobre base."
-                          : undefined
-                      }
-                    />
-                    <EditableAmparoField
-                      label="Tasa (%)"
-                      type="text"
-                      inputMode="decimal"
-                      value={amparo.tasa}
-                      onChange={(value) => updateAmparo(index, "tasa", value)}
-                      help="Digite 0.20 para una tasa de 0,20%. No use 20."
-                      warning={rateIssue}
-                    />
-                    <label className="flex min-h-10 items-center gap-3 rounded-lg border border-neutral-300 bg-white px-3 py-2 md:col-span-2">
-                      <input
-                        type="checkbox"
-                        checked={amparo.usar_prima_neta_manual}
-                        onChange={(event) =>
-                          updateAmparo(
-                            index,
-                            "usar_prima_neta_manual",
-                            event.target.checked,
-                          )
-                        }
-                        className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-neutral-800">
-                          Usar prima neta manual
-                        </span>
-                        <span className="block text-xs leading-5 text-neutral-500">
-                          Mantiene este valor aunque cambien tasa, fechas o días.
-                        </span>
-                      </span>
-                    </label>
-                    {amparo.usar_prima_neta_manual ? (
-                      <EditableAmparoField
-                        label="Prima neta manual"
-                        type="text"
-                        inputMode="decimal"
-                        value={amparo.prima_neta_manual}
-                        onChange={(value) =>
-                          updateAmparo(index, "prima_neta_manual", value)
-                        }
-                        onBlur={(value) =>
-                          updateAmparo(index, "prima_neta_manual", formatCurrencyInputValue(value))
-                        }
-                        help="El IVA y la prima total se calculan sobre este valor."
-                      />
-                    ) : null}
-                  </div>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-[1fr_1.5fr_auto] md:items-end">
-                    <div className="grid grid-cols-2 gap-3">
-                      <EditableAmparoField
-                        label="Periodo adicional"
-                        type="text"
-                        inputMode="numeric"
-                        value={amparo.periodo_cantidad}
-                        onChange={(value) =>
-                          updateAmparo(index, "periodo_cantidad", value)
-                        }
-                        disabled={amparo.fecha_hasta_manual}
-                        help={
-                          amparo.fecha_hasta_manual
-                            ? "No se aplica mientras la fecha fin manual esté activa."
-                            : calculation.dias_adicionales === null
-                              ? "Vacío aplica la regla automática."
-                              : `Equivale a ${calculation.dias_adicionales} días.`
-                        }
-                      />
-                      <label
-                        className={`space-y-2 ${amparo.fecha_hasta_manual ? "opacity-60" : ""}`}
-                      >
-                        <span className="text-sm font-medium text-neutral-700">
-                          Unidad
-                        </span>
-                        <select
-                          value={amparo.periodo_unidad}
-                          disabled={amparo.fecha_hasta_manual}
-                          onChange={(event) =>
-                            updateAmparo(index, "periodo_unidad", event.target.value)
-                          }
-                          className="h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 disabled:cursor-not-allowed disabled:bg-neutral-100"
-                        >
-                          <option value="dias">Días</option>
-                          <option value="meses">Meses</option>
-                          <option value="anios">Años</option>
-                        </select>
-                      </label>
-                    </div>
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-neutral-700">
-                        Fuente
-                      </span>
-                      <textarea
-                        value={amparo.fuente_texto}
-                        onChange={(event) =>
-                          updateAmparo(index, "fuente_texto", event.target.value)
-                        }
-                        rows={3}
-                        className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setAmparos((items) => items.filter((_, itemIndex) => itemIndex !== index))
-                      }
-                      className="h-10 rounded-lg border border-rose-200 bg-white px-4 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
-                    >
-                      Quitar
-                    </button>
-                  </div>
-
-                  <div className="mt-4 grid gap-3 md:grid-cols-4">
-                    {calculableSubamparo ? (
-                      <ReadOnlyMetric
-                        label="Línea calculable"
-                        value={calculableSubamparo.nombre}
-                      />
-                    ) : null}
-                    <ReadOnlyMetric
-                      label="Fecha inicio vigencia"
-                      value={formatDate(calculation.fecha_desde)}
-                    />
-                    <ReadOnlyMetric
-                      label="Fecha fin contrato/base"
-                      value={formatDate(form.fecha_fin)}
-                    />
-                    <ReadOnlyMetric
-                      label="Fecha fin amparo calculada"
-                      value={formatDate(calculation.fecha_hasta)}
-                    />
-                    <ReadOnlyMetric
-                      label="Días de vigencia"
-                      value={calculation.dias_vigencia?.toString() ?? "Sin dato"}
-                    />
-                    <ReadOnlyMetric
-                      label={
-                        calculation.usar_prima_neta_manual
-                          ? "Prima neta manual aplicada"
-                          : "Prima neta"
-                      }
-                      value={formatCurrency(
-                        calculation.prima_neta,
-                        form.moneda || "COP",
-                      )}
-                    />
-                    {calculation.usar_prima_neta_manual ? (
-                      <ReadOnlyMetric
-                        label="Prima automática de referencia"
-                        value={formatCurrency(
-                          calculation.prima_neta_automatica,
-                          form.moneda || "COP",
-                        )}
-                      />
-                    ) : null}
-                    <ReadOnlyMetric
-                      label="IVA"
-                      value={formatCurrency(
-                        calculation.impuesto,
-                        form.moneda || "COP",
-                      )}
-                    />
-                    <ReadOnlyMetric
-                      label="Prima total"
-                      value={formatCurrency(
-                        calculation.prima_total,
-                        form.moneda || "COP",
-                      )}
-                    />
-                    <ReadOnlyMetric
-                      label={getCoverageBaseLabel(calculation)}
-                      value={formatCurrency(
-                        getCoverageBaseDisplayValue(calculation),
-                        form.moneda || "COP",
-                      )}
-                    />
-                    {isAdvanceCoverage ? (
-                      <ReadOnlyMetric
-                        label="Criterio base"
-                        value={getAdvanceBaseCriterion(calculation, form)}
-                      />
-                    ) : null}
-                    {isAdvanceCoverage ? (
-                      <ReadOnlyMetric
-                        label="Origen anticipo"
-                        value={getAdvanceBaseOrigin(amparo, form)}
-                      />
-                    ) : null}
-                    <ReadOnlyMetric
-                      label="Modo cálculo"
-                      value={calculation.modo_calculo ?? "Sin dato"}
-                    />
-                    <ReadOnlyMetric
-                      label="IVA %"
-                      value={`${formatPercent(calculation.iva_porcentaje)}%`}
-                    />
-                    <ReadOnlyMetric
-                      label="Tasa (%)"
-                      value={
-                        decimalFromRatePercent(amparo.tasa) === null
-                          ? "Sin tasa"
-                          : `${formatRatePercent(decimalFromRatePercent(amparo.tasa))}%${amparo.tasa_manual ? " manual" : ""}`
-                      }
-                    />
-                  </div>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    <ManualDateOverride
-                      checkboxLabel="Usar fecha inicio manual para este amparo"
-                      fieldLabel="Fecha inicio manual"
-                      checked={amparo.fecha_desde_manual}
-                      value={amparo.fecha_desde}
-                      onCheckedChange={(checked) =>
-                        updateAmparoDateOverride(
-                          index,
-                          "fecha_desde_manual",
-                          "fecha_desde",
-                          checked,
-                          calculation.fecha_desde,
-                        )
-                      }
-                      onValueChange={(value) =>
-                        updateAmparo(index, "fecha_desde", value)
-                      }
-                      warning={
-                        amparo.fecha_desde_manual
-                          ? getRequiredDateInputIssue("Fecha inicio manual", amparo.fecha_desde)
-                          : null
-                      }
-                    />
-                    <ManualDateOverride
-                      checkboxLabel="Usar fecha fin manual para este amparo"
-                      fieldLabel="Fecha fin manual"
-                      checked={amparo.fecha_hasta_manual}
-                      value={amparo.fecha_hasta}
-                      onCheckedChange={(checked) =>
-                        updateAmparoDateOverride(
-                          index,
-                          "fecha_hasta_manual",
-                          "fecha_hasta",
-                          checked,
-                          calculation.fecha_hasta,
-                        )
-                      }
-                      onValueChange={(value) =>
-                        updateAmparo(index, "fecha_hasta", value)
-                      }
-                      warning={
-                        amparo.fecha_hasta_manual
-                          ? getRequiredDateInputIssue("Fecha fin manual", amparo.fecha_hasta)
-                          : null
-                      }
-                    />
-                  </div>
-
-                  {calculation.subamparos.length > 0 ? (
-                    <SubcoverageEditor
-                      subamparos={calculation.subamparos}
-                      currency={form.moneda || "COP"}
-                      mainInsuredValue={calculation.valor_asegurado}
-                      onChange={(nextSubamparos) =>
-                        updateAmparo(index, "subamparos", nextSubamparos)
-                      }
-                    />
-                  ) : null}
-
-                  <label className="mt-4 block space-y-2">
-                    <span className="text-sm font-medium text-neutral-700">
-                      Motivo de revisión
-                    </span>
-                    <textarea
-                      value={mergeReviewReasons(
-                        amparo.motivo_revision,
-                        calculation.motivo_revision,
-                      )}
-                      onChange={(event) =>
-                        updateAmparo(index, "motivo_revision", event.target.value)
-                      }
-                      rows={2}
-                      className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                    />
-                  </label>
-
-                  <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-neutral-600">
-                    <ConfidenceBadge confidence={amparo.confianza} />
-                    <span>Página {amparo.fuente_pagina || "sin dato"}</span>
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={
-                          amparo.requiere_revision ||
-                          Boolean(calculation.motivo_revision)
-                        }
-                        onChange={(event) =>
-                          updateAmparo(
-                            index,
-                            "requiere_revision",
-                            event.target.checked,
-                          )
-                        }
-                        className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
-                      />
-                      Requiere revisión
-                    </label>
-                  </div>
-
-                </div>
-              );
-            })
-          )}
+            <p className="text-sm text-neutral-500">
+              {isManual
+                ? "Agrega al menos un amparo para poder cotizar."
+                : "No se detectaron amparos."}
+            </p>
+          ) : null}
+          {policyGroups
+            .filter((group) => group.items.length > 0)
+            .flatMap((group) => [
+              <PolicyHeader
+                key={`policy-${group.policy}`}
+                label={COVERAGE_POLICY_LABELS[group.policy]}
+                totals={group.totals}
+                currency={form.moneda || "COP"}
+              />,
+              ...group.items.map((view) => (
+            <AmparoCard
+              key={view.amparo.uid}
+              amparo={view.amparo}
+              calculation={view.calculation}
+              form={form}
+              isManual={isManual}
+              onEditingChange={setAmparoEditing}
+              onChange={(key, value) => updateAmparo(view.index, key, value)}
+              onDateOverride={(manualKey, valueKey, checked, calculatedValue) =>
+                updateAmparoDateOverride(
+                  view.index,
+                  manualKey,
+                  valueKey,
+                  checked,
+                  calculatedValue,
+                )
+              }
+              onRemove={() =>
+                setAmparos((items) =>
+                  items.filter((item) => item.uid !== view.amparo.uid),
+                )
+              }
+            />
+              )),
+            ])}
         </div>
       </section>
 
-      <section className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
-        <div className="grid gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
-          <label className="space-y-2">
-            <span className="text-sm font-medium text-neutral-700">
-              Validado por
-            </span>
+      <div className="sticky bottom-0 z-20 rounded-lg border border-neutral-200 bg-white/95 p-4 shadow-[0_-6px_20px_rgba(0,0,0,0.07)] backdrop-blur">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
+            Validado por
             <select
               value={validadoPor}
               onChange={(event) => setValidadoPor(event.target.value)}
-              className="h-11 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15 md:w-72"
+              className="h-10 rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
             >
               {EXECUTIVES.map((executive) => (
                 <option key={executive} value={executive}>
@@ -1448,33 +1109,59 @@ export function ContractDetailClient({ contractId }: { contractId: string }) {
               ))}
             </select>
           </label>
-          <button
-            type="submit"
-            disabled={isSaving || detail.contract.estado === "procesando" || isIssuedLocked}
-            className="h-11 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+          <div
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-sm"
+            aria-live="polite"
           >
-            {isIssuedLocked
-              ? "Póliza emitida"
-              : isSaving
-                ? "Guardando..."
-                : "Confirmar validación"}
-          </button>
-          <button
-            type="button"
-            onClick={onGenerateQuote}
-            disabled={!canGenerateQuote || quoteAction !== null}
-            className="h-11 rounded-lg border border-[#d25b30] bg-white px-5 text-sm font-semibold text-[#b94d28] shadow-sm transition hover:bg-[#d25b30]/5 disabled:cursor-not-allowed disabled:border-neutral-300 disabled:text-neutral-400"
-          >
-            {quoteAction === "generate"
-              ? "Generando..."
-              : detail.contract.estado !== "validado"
-                ? "Validación requerida"
-                : activeIssuedQuote
-                  ? "Póliza emitida"
-                  : "Generar cotización"}
-          </button>
+            {dirty ? (
+              <ReviewChip tone="review">Cambios sin validar</ReviewChip>
+            ) : detail.contract.estado === "validado" ? (
+              <ReviewChip tone="ok">Validado</ReviewChip>
+            ) : null}
+            {validationError ? (
+              <span className="font-medium text-rose-700">{validationError}</span>
+            ) : null}
+          </div>
+          {isIssuedLocked ? (
+            <button
+              type="submit"
+              disabled
+              className="h-11 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-neutral-400"
+            >
+              Póliza emitida
+            </button>
+          ) : canGenerateQuote ? (
+            <button
+              type="button"
+              onClick={onGenerateQuote}
+              disabled={quoteAction !== null}
+              className="h-11 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+            >
+              {quoteAction === "generate" ? "Generando..." : "Generar cotización"}
+            </button>
+          ) : (
+            <>
+              {detail.contract.estado === "validado" ? (
+                <button
+                  type="button"
+                  disabled
+                  title="Confirma la validación de los cambios para generar la cotización."
+                  className="h-11 rounded-lg border border-neutral-300 bg-white px-5 text-sm font-semibold text-neutral-400 disabled:cursor-not-allowed"
+                >
+                  Generar cotización
+                </button>
+              ) : null}
+              <button
+                type="submit"
+                disabled={isSaving || detail.contract.estado === "procesando"}
+                className="h-11 rounded-lg bg-[#d25b30] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#b94d28] disabled:cursor-not-allowed disabled:bg-neutral-400"
+              >
+                {isSaving ? "Guardando..." : "Confirmar validación"}
+              </button>
+            </>
+          )}
         </div>
-      </section>
+      </div>
         </fieldset>
         </form>
       </section>
@@ -1653,8 +1340,14 @@ function ContractDetailTabs({
 }
 
 function DocumentSummary({ summary }: { summary: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const text =
+    summary?.trim() ||
+    "Este contrato fue procesado antes de incorporar el resumen contextual. No se reprocesa automáticamente para conservar la trazabilidad.";
+  const isLong = text.length > 180;
+
   return (
-    <section className="rounded-lg border border-neutral-200 bg-white p-5 shadow-sm">
+    <section className="rounded-lg border border-neutral-200 bg-white px-5 py-3 shadow-sm">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-neutral-900">
           Resumen del documento
@@ -1662,10 +1355,21 @@ function DocumentSummary({ summary }: { summary: string | null }) {
         <span className="rounded-full bg-[#d25b30]/10 px-2 py-0.5 text-xs font-semibold text-[#b94d28]">
           Generado por IA
         </span>
+        {isLong ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className="ml-auto text-xs font-semibold text-[#b94d28] underline-offset-2 hover:underline"
+          >
+            {expanded ? "Ver menos" : "Ver más"}
+          </button>
+        ) : null}
       </div>
-      <p className="mt-3 text-sm leading-6 text-neutral-700">
-        {summary?.trim() ||
-          "Este contrato fue procesado antes de incorporar el resumen contextual. No se reprocesa automáticamente para conservar la trazabilidad."}
+      <p
+        className={`mt-2 text-sm leading-6 text-neutral-700 ${expanded || !isLong ? "" : "line-clamp-2"}`}
+      >
+        {text}
       </p>
     </section>
   );
@@ -2253,6 +1957,7 @@ function EditableField({
   type = "text",
   inputMode,
   asDate = false,
+  placeholder,
 }: {
   label: string;
   value: string;
@@ -2262,6 +1967,7 @@ function EditableField({
   type?: "text" | "number" | "date";
   inputMode?: "decimal" | "numeric";
   asDate?: boolean;
+  placeholder?: string;
 }) {
   if (asDate) {
     return (
@@ -2275,20 +1981,23 @@ function EditableField({
   }
 
   return (
-    <label className="space-y-2">
-      <span className="text-sm font-medium text-neutral-700">{label}</span>
-      <input
-        type={type}
-        step={type === "number" ? "any" : undefined}
-        inputMode={inputMode}
-        autoComplete={type === "date" ? "off" : undefined}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={(event) => onBlur?.(event.target.value)}
-        className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-      />
+    <div className="space-y-2">
+      <label className="block space-y-2">
+        <span className="text-sm font-medium text-neutral-700">{label}</span>
+        <input
+          type={type}
+          step={type === "number" ? "any" : undefined}
+          inputMode={inputMode}
+          autoComplete={type === "date" ? "off" : undefined}
+          placeholder={placeholder}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={(event) => onBlur?.(event.target.value)}
+          className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+        />
+      </label>
       <SourceBlock source={source} />
-    </label>
+    </div>
   );
 }
 
@@ -2306,28 +2015,30 @@ function DateTextField({
   warning?: string | null;
 }) {
   return (
-    <label className="space-y-2">
-      <span className="text-sm font-medium text-neutral-700">{label}</span>
-      <input
-        type="text"
-        inputMode="numeric"
-        autoComplete="off"
-        placeholder="DD/MM/YYYY"
-        value={formatDateInputValue(value)}
-        onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
-        className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-      />
-      {warning ? (
-        <span className="block text-xs font-medium leading-5 text-amber-700">
-          {warning}
-        </span>
-      ) : (
-        <span className="block text-xs leading-5 text-neutral-500">
-          Formato DD/MM/YYYY. El cálculo se actualiza solo con fecha completa.
-        </span>
-      )}
+    <div className="space-y-2">
+      <label className="block space-y-2">
+        <span className="text-sm font-medium text-neutral-700">{label}</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          autoComplete="off"
+          placeholder="DD/MM/YYYY"
+          value={formatDateInputValue(value)}
+          onChange={(event) => onChange(normalizeDateInputChange(event.target.value))}
+          className="h-11 w-full rounded-lg border border-neutral-300 px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+        />
+        {warning ? (
+          <span className="block text-xs font-medium leading-5 text-amber-700">
+            {warning}
+          </span>
+        ) : (
+          <span className="block text-xs leading-5 text-neutral-500">
+            Formato DD/MM/YYYY. El cálculo se actualiza solo con fecha completa.
+          </span>
+        )}
+      </label>
       <SourceBlock source={source} />
-    </label>
+    </div>
   );
 }
 
@@ -2379,23 +2090,8 @@ function EditableAmparoField({
   );
 }
 
-function ReadOnlyMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-neutral-200 bg-white px-3 py-2">
-      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
-        {label}
-      </p>
-      <p className="mt-1 break-words text-sm font-semibold text-neutral-900">
-        {value}
-      </p>
-    </div>
-  );
-}
-
 function ContractDateStatus({ form }: { form: ContractForm }) {
   const issues = getContractDateIssues(form);
-  const hasValidStart = Boolean(normalizeDateValue(form.fecha_inicio));
-  const hasValidEnd = Boolean(normalizeDateValue(form.fecha_fin));
 
   if (issues.length > 0) {
     return (
@@ -2405,16 +2101,7 @@ function ContractDateStatus({ form }: { form: ContractForm }) {
     );
   }
 
-  if (!hasValidStart && !hasValidEnd) {
-    return null;
-  }
-
-  return (
-    <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-      Fecha ingresada manualmente o confirmada. Se usará para recalcular las
-      vigencias y primas de los amparos que no tengan fechas manuales propias.
-    </div>
-  );
+  return null;
 }
 
 function ManualDateOverride({
@@ -2445,10 +2132,6 @@ function ManualDateOverride({
         />
         {checkboxLabel}
       </label>
-      <p className="mt-2 text-xs leading-5 text-neutral-500">
-        Use esta opción solo si la póliza tiene una vigencia distinta a la del
-        contrato.
-      </p>
       {checked ? (
         <div className="mt-3">
           <DateTextField
@@ -2485,109 +2168,103 @@ function SubcoverageEditor({
     );
   }
 
+  const inputClass =
+    "h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15";
+
   return (
-    <div className="mt-4 rounded-lg border border-neutral-200 bg-white p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-neutral-800">
-          Subamparos incluidos
-        </p>
-        <p className="text-xs font-medium text-neutral-500">
+    <div className="space-y-2 rounded-lg border border-neutral-200 bg-white p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <SectionTitle>Subamparos incluidos</SectionTitle>
+        <p className="text-xs text-neutral-500">
           Solo la línea calculable alimenta la prima
         </p>
       </div>
-      <div className="mt-3 space-y-3">
+      <div className="hidden grid-cols-[1.5rem_1fr_6rem_11rem] gap-3 px-1 text-xs font-medium text-neutral-500 sm:grid">
+        <span />
+        <span>Subamparo</span>
+        <span>% sublímite</span>
+        <span>Valor sublímite</span>
+      </div>
+      <div className="divide-y divide-neutral-100">
         {subamparos.map((subamparo, index) => (
           <div
-            key={`${subamparo.nombre}-${subamparo.origen}`}
-            className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-700"
+            key={`${subamparo.nombre}-${index}`}
+            className="grid items-center gap-x-3 gap-y-1 px-1 py-1.5 sm:grid-cols-[1.5rem_1fr_6rem_11rem]"
           >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={subamparo.incluido}
-                  onChange={(event) =>
-                    updateSubamparo(index, { incluido: event.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
-                />
-                <span className="font-semibold text-neutral-900">
-                  {subamparo.nombre}
-                </span>
-              </label>
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={
-                    subamparo.calculable
-                      ? "rounded-full bg-[#d25b30]/10 px-2 py-0.5 font-semibold text-[#8f3e21]"
-                      : "rounded-full bg-neutral-200 px-2 py-0.5 font-semibold text-neutral-700"
-                  }
-                >
-                  {subamparo.calculable ? "calculable" : "informativo"}
-                </span>
-                <span className="text-neutral-500">
-                  {subamparo.origen === "contrato"
+            <input
+              type="checkbox"
+              aria-label={`Incluir ${subamparo.nombre}`}
+              checked={subamparo.incluido}
+              onChange={(event) =>
+                updateSubamparo(index, { incluido: event.target.checked })
+              }
+              className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
+            />
+            <div className="min-w-0 text-sm">
+              <span className="font-medium text-neutral-900">{subamparo.nombre}</span>
+              <span
+                className="ml-2 text-xs text-neutral-500"
+                title={
+                  subamparo.origen === "contrato"
                     ? "Dato contractual"
-                    : "Regla plantilla AFISEC"}
-                </span>
-              </div>
+                    : "Regla plantilla AFISEC"
+                }
+              >
+                {subamparo.calculable ? "calculable" : "informativo"}
+                {subamparo.requiere_revision ? " · revisar" : ""}
+              </span>
             </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="space-y-1">
-                <span className="font-medium text-neutral-600">
-                  Porcentaje sublímite %
-                </span>
-                <input
-                  type="number"
-                  step="any"
-                  value={percentFromDecimal(subamparo.porcentaje_sublimite)}
-                  onChange={(event) =>
-                  {
-                    const percentage = decimalFromPercent(event.target.value);
-                    updateSubamparo(index, {
-                      porcentaje_sublimite: percentage,
-                      valor_sublimite:
-                        percentage === null || mainInsuredValue === null
-                          ? subamparo.valor_sublimite
-                          : roundMoney(mainInsuredValue * percentage),
-                      origen:
-                        subamparo.origen === "contrato"
-                          ? "contrato"
-                          : "regla_plantilla_afisec",
-                    });
-                  }}
-                  disabled={subamparo.calculable}
-                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="font-medium text-neutral-600">
-                  Valor sublímite
-                </span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={
-                    subamparo.valor_sublimite === null
-                      ? ""
-                      : String(subamparo.valor_sublimite)
-                  }
-                  onChange={(event) =>
-                    updateSubamparo(index, {
-                      valor_sublimite: numberOrNull(event.target.value),
-                    })
-                  }
-                  disabled={subamparo.calculable}
-                  className="h-9 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition disabled:bg-neutral-100 focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
-                />
-              </label>
-            </div>
-            <p className="mt-2 text-neutral-500">
-              {subamparo.valor_sublimite === null
-                ? "Sin sublímite"
-                : formatCurrency(subamparo.valor_sublimite, currency)}
-              {subamparo.requiere_revision ? " · revisar" : ""}
-            </p>
+            {subamparo.calculable ? (
+              <span className="text-sm text-neutral-700">
+                {percentFromDecimal(subamparo.porcentaje_sublimite)}%
+              </span>
+            ) : (
+              <input
+                type="number"
+                step="any"
+                aria-label={`Porcentaje sublímite de ${subamparo.nombre}`}
+                value={percentFromDecimal(subamparo.porcentaje_sublimite)}
+                onChange={(event) => {
+                  const percentage = decimalFromPercent(event.target.value);
+                  updateSubamparo(index, {
+                    porcentaje_sublimite: percentage,
+                    valor_sublimite:
+                      percentage === null || mainInsuredValue === null
+                        ? subamparo.valor_sublimite
+                        : roundMoney(mainInsuredValue * percentage),
+                    origen:
+                      subamparo.origen === "contrato"
+                        ? "contrato"
+                        : "regla_plantilla_afisec",
+                  });
+                }}
+                className={inputClass}
+              />
+            )}
+            {subamparo.calculable ? (
+              <span className="text-sm text-neutral-700">
+                {subamparo.valor_sublimite === null
+                  ? "Sin sublímite"
+                  : formatCurrency(subamparo.valor_sublimite, currency)}
+              </span>
+            ) : (
+              <input
+                type="text"
+                inputMode="decimal"
+                aria-label={`Valor sublímite de ${subamparo.nombre}`}
+                value={
+                  subamparo.valor_sublimite === null
+                    ? ""
+                    : String(subamparo.valor_sublimite)
+                }
+                onChange={(event) =>
+                  updateSubamparo(index, {
+                    valor_sublimite: numberOrNull(event.target.value),
+                  })
+                }
+                className={inputClass}
+              />
+            )}
           </div>
         ))}
       </div>
@@ -2595,21 +2272,725 @@ function SubcoverageEditor({
   );
 }
 
+type AmparoCalculation = ReturnType<typeof calculateEditableAmparo>;
+
+const INSURED_VALUE_MODES: Array<{ value: string; label: string }> = [
+  { value: "porcentaje_valor_contrato", label: "Porcentaje sobre base" },
+  { value: "cuantia_fija", label: "Cuantía fija" },
+  { value: "valor_asegurado_manual", label: "Valor manual" },
+];
+
+const documentTypeLabels: Record<string, string> = {
+  contrato_base: "Contrato base",
+  orden: "Orden de servicio",
+  orden_compra: "Orden de compra",
+  otrosi: "Otrosí",
+};
+
+let newAmparoSequence = 0;
+
+function getInitialValidator(detail: DetailResponse) {
+  const stored = detail.contract.validado_por;
+
+  if (
+    detail.contract.estado === "validado" &&
+    stored &&
+    EXECUTIVES.some((executive) => executive === stored)
+  ) {
+    return stored;
+  }
+
+  const clientExecutive = detail.client.ejecutivo;
+
+  if (EXECUTIVES.some((executive) => executive === clientExecutive)) {
+    return clientExecutive;
+  }
+
+  return normalizeExecutiveForForm(stored);
+}
+
+function describeInsuredValue(calculation: AmparoCalculation, currency: string) {
+  const percentage = percentFromDecimal(calculation.porcentaje);
+  const base = formatCurrency(getCoverageBaseDisplayValue(calculation), currency);
+
+  if (calculation.modo_calculo === "anticipo_100") {
+    return percentage ? `${percentage}% del anticipo sobre ${base}` : "Anticipo";
+  }
+
+  if (calculation.modo_calculo === "cuantia_fija") {
+    return calculation.tipo_amparo === "responsabilidad_civil_extracontractual"
+      ? "Cuantía RCE"
+      : "Cuantía fija";
+  }
+
+  if (calculation.modo_calculo === "valor_asegurado_manual") {
+    return "Valor manual";
+  }
+
+  if (calculation.modo_calculo === "porcentaje_valor_contrato" && percentage) {
+    return `${percentage}% de ${base}`;
+  }
+
+  return "Por definir";
+}
+
+function sumNullable(values: Array<number | null>) {
+  const present = values.filter((value): value is number => value !== null);
+
+  return present.length === 0
+    ? null
+    : roundMoney(present.reduce((total, value) => total + value, 0));
+}
+
+function summarizePremiums(calculations: AmparoCalculation[]) {
+  return {
+    prima_neta: sumNullable(calculations.map((item) => item.prima_neta)),
+    iva: sumNullable(calculations.map((item) => item.impuesto)),
+    prima_total: sumNullable(calculations.map((item) => item.prima_total)),
+  };
+}
+
+function PolicyHeader({
+  label,
+  totals,
+  currency,
+}: {
+  label: string;
+  totals: ReturnType<typeof summarizePremiums>;
+  currency: string;
+}) {
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 rounded-lg bg-neutral-100 px-4 py-2 first:mt-0"
+    >
+      <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-neutral-900">
+        {label}
+      </h3>
+      <p className="text-sm text-neutral-700">
+        Prima neta{" "}
+        <strong className="font-semibold text-neutral-950">
+          {formatCurrency(totals.prima_neta, currency)}
+        </strong>
+        {" · "}IVA{" "}
+        <strong className="font-semibold text-neutral-950">
+          {formatCurrency(totals.iva, currency)}
+        </strong>
+        {" · "}Prima total{" "}
+        <strong className="font-semibold text-[#b94d28]">
+          {formatCurrency(totals.prima_total, currency)}
+        </strong>
+      </p>
+    </div>
+  );
+}
+
+function SummaryItem({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-semibold uppercase tracking-[0.1em] text-neutral-500">
+        {label}
+      </dt>
+      <dd className="mt-1 break-words text-sm font-semibold text-neutral-950">
+        {value}
+      </dd>
+      {hint ? (
+        <dd className="mt-0.5 break-words text-xs text-neutral-500">{hint}</dd>
+      ) : null}
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return (
+    <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
+      {children}
+    </h4>
+  );
+}
+
+const selectClass =
+  "h-10 w-full rounded-lg border border-neutral-300 bg-white px-3 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15";
+
+function AmparoCard({
+  amparo,
+  calculation,
+  form,
+  isManual,
+  onEditingChange,
+  onChange,
+  onDateOverride,
+  onRemove,
+}: {
+  amparo: EditableAmparo;
+  calculation: AmparoCalculation;
+  form: ContractForm;
+  isManual: boolean;
+  onEditingChange: (
+    uid: string,
+    editing: boolean,
+    policy: CoveragePolicy,
+  ) => void;
+  onChange: (
+    key: keyof EditableAmparo,
+    value: string | boolean | CoverageSubamparo[],
+  ) => void;
+  onDateOverride: (
+    manualKey: "fecha_desde_manual" | "fecha_hasta_manual",
+    valueKey: "fecha_desde" | "fecha_hasta",
+    checked: boolean,
+    calculatedValue: string | null,
+  ) => void;
+  onRemove: () => void;
+}) {
+  const currency = form.moneda || "COP";
+  const reviewReason = mergeReviewReasons(
+    amparo.motivo_revision,
+    calculation.motivo_revision,
+  );
+  const needsReview = Boolean(reviewReason);
+  const hasSource = !isManual && Boolean(amparo.fuente_texto || amparo.fuente_pagina);
+  const [open, setOpen] = useState(
+    () => amparo.uid.startsWith("new-") || needsReview,
+  );
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [datesOpen, setDatesOpen] = useState(
+    amparo.fecha_desde_manual || amparo.fecha_hasta_manual,
+  );
+  const [detailOpen, setDetailOpen] = useState(false);
+  const policy = classifyCoveragePolicy(calculation.tipo_amparo);
+  const uid = amparo.uid;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    onEditingChange(uid, true, policy);
+
+    return () => onEditingChange(uid, false, policy);
+    // policy se congela al abrir el editor; no debe re-ejecutarse al cambiar el tipo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, uid, onEditingChange]);
+
+  const isAdvance = calculation.tipo_amparo === "buen_manejo_anticipo";
+  const coverageMode = getEditableCoverageMode(amparo, calculation);
+  const rateIssue = getRateInputIssue(amparo.tasa);
+  const rate = decimalFromRatePercent(amparo.tasa);
+  const manualDatesActive = amparo.fecha_desde_manual || amparo.fecha_hasta_manual;
+  const title = amparo.tipo_amparo.trim()
+    ? formatCoverageName(calculation.tipo_amparo)
+    : "Amparo nuevo";
+  const validity =
+    calculation.fecha_desde && calculation.fecha_hasta
+      ? `${formatDate(calculation.fecha_desde)} → ${formatDate(calculation.fecha_hasta)}`
+      : "Por definir";
+
+  return (
+    <article
+      className={`rounded-lg border bg-white ${needsReview ? "border-amber-300" : "border-neutral-200"}`}
+    >
+      <div className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {isManual ? null : <ConfidenceDot confidence={amparo.confianza} />}
+              <h4 className="text-base font-semibold text-neutral-950">{title}</h4>
+              <ReviewChip tone={needsReview ? "review" : "ok"}>
+                {needsReview ? "Revisar" : "Listo"}
+              </ReviewChip>
+            </div>
+            {needsReview ? (
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-amber-800">
+                {reviewReason}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {hasSource ? (
+              <button
+                type="button"
+                aria-expanded={sourceOpen}
+                onClick={() => setSourceOpen((value) => !value)}
+                className="h-9 rounded-lg border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-700 transition hover:bg-neutral-50"
+              >
+                {sourceOpen ? "Ocultar fuente" : "Ver fuente"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen((value) => !value)}
+              className="h-9 rounded-lg border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-800 transition hover:bg-neutral-50"
+            >
+              {open ? "Cerrar" : "Editar"}
+            </button>
+            <button
+              type="button"
+              onClick={onRemove}
+              className="h-9 rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-50"
+            >
+              Quitar
+            </button>
+          </div>
+        </div>
+
+        <dl className="mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+          <SummaryItem
+            label="Valor asegurado"
+            value={formatCurrency(calculation.valor_asegurado, currency)}
+            hint={describeInsuredValue(calculation, currency)}
+          />
+          <SummaryItem
+            label="Vigencia"
+            value={validity}
+            hint={`${calculation.dias_vigencia?.toString() ?? "Sin dato"} días${manualDatesActive ? " · fechas manuales" : ""}`}
+          />
+          <SummaryItem
+            label="Tasa"
+            value={
+              rate === null
+                ? "Sin tasa"
+                : `${formatRatePercent(rate)}%${amparo.tasa_manual ? " manual" : ""}`
+            }
+          />
+          <SummaryItem
+            label={
+              calculation.usar_prima_neta_manual ? "Prima neta (manual)" : "Prima neta"
+            }
+            value={formatCurrency(calculation.prima_neta, currency)}
+            hint={`Total ${formatCurrency(calculation.prima_total, currency)}`}
+          />
+        </dl>
+
+        {sourceOpen && hasSource ? (
+          <div className="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">
+            <p className="font-semibold text-neutral-700">
+              Pág. {amparo.fuente_pagina || "sin dato"}
+            </p>
+            <p className="mt-1 whitespace-pre-wrap">
+              {amparo.fuente_texto || "Sin texto de fuente."}
+            </p>
+          </div>
+        ) : null}
+      </div>
+
+      {open ? (
+        <div className="space-y-5 border-t border-neutral-200 bg-neutral-50 p-4">
+          <EditableAmparoField
+            label="Tipo de amparo"
+            value={amparo.tipo_amparo}
+            onChange={(value) => onChange("tipo_amparo", value)}
+          />
+
+          <div className="space-y-3">
+            <SectionTitle>Valor asegurado</SectionTitle>
+            {isAdvance ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <EditableAmparoField
+                  label="Porcentaje anticipo %"
+                  type="text"
+                  inputMode="decimal"
+                  value={percentFromDecimal(calculation.porcentaje)}
+                  onChange={(value) => onChange("porcentaje", value)}
+                  help="Digite 20 para representar 20%."
+                />
+                <EditableAmparoField
+                  label="Base/valor anticipo"
+                  type="text"
+                  inputMode="decimal"
+                  value={amparo.valor_base_calculo}
+                  onChange={(value) => onChange("valor_base_calculo", value)}
+                  onBlur={(value) =>
+                    onChange("valor_base_calculo", formatCurrencyInputValue(value))
+                  }
+                  help="Edite este valor si la base del anticipo no corresponde al valor total del contrato."
+                />
+              </div>
+            ) : (
+              <>
+                <div
+                  role="radiogroup"
+                  aria-label="Cómo se obtiene el valor asegurado"
+                  className="inline-flex flex-wrap gap-1 rounded-lg border border-neutral-200 bg-white p-1"
+                >
+                  {INSURED_VALUE_MODES.map((mode) => (
+                    <button
+                      key={mode.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={coverageMode === mode.value}
+                      onClick={() => onChange("modo_calculo", mode.value)}
+                      className={
+                        coverageMode === mode.value
+                          ? "h-8 rounded-md bg-[#d25b30] px-3 text-sm font-semibold text-white"
+                          : "h-8 rounded-md px-3 text-sm font-medium text-neutral-600 hover:bg-neutral-100"
+                      }
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="max-w-sm">
+                  {coverageMode === "porcentaje_valor_contrato" ? (
+                    <EditableAmparoField
+                      label="Porcentaje %"
+                      type="text"
+                      inputMode="decimal"
+                      value={amparo.porcentaje}
+                      onChange={(value) => onChange("porcentaje", value)}
+                      help="Digite 20 para representar 20%."
+                    />
+                  ) : null}
+                  {coverageMode === "cuantia_fija" ? (
+                    <EditableAmparoField
+                      label="Cuantía fija"
+                      type="text"
+                      inputMode="decimal"
+                      value={amparo.cuantia_fija}
+                      onChange={(value) => onChange("cuantia_fija", value)}
+                      onBlur={(value) =>
+                        onChange("cuantia_fija", formatCurrencyInputValue(value))
+                      }
+                    />
+                  ) : null}
+                  {coverageMode === "valor_asegurado_manual" ? (
+                    <EditableAmparoField
+                      label="Valor asegurado"
+                      type="text"
+                      inputMode="decimal"
+                      value={amparo.valor_asegurado}
+                      onChange={(value) => onChange("valor_asegurado", value)}
+                      onBlur={(value) =>
+                        onChange("valor_asegurado", formatCurrencyInputValue(value))
+                      }
+                    />
+                  ) : null}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <SectionTitle>Vigencia</SectionTitle>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-neutral-700">Tipo</span>
+                <select
+                  value={amparo.tipo_vigencia}
+                  onChange={(event) => onChange("tipo_vigencia", event.target.value)}
+                  className={selectClass}
+                >
+                  <option value="">Sin dato</option>
+                  <option value="contractual">Contractual</option>
+                  <option value="post_contractual">Post contractual</option>
+                </select>
+              </label>
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-neutral-700">Base</span>
+                <select
+                  value={amparo.base_vigencia}
+                  onChange={(event) => onChange("base_vigencia", event.target.value)}
+                  className={selectClass}
+                >
+                  <option value="">Sin dato</option>
+                  <option value="fecha_inicio_contrato">Inicio contrato</option>
+                  <option value="fecha_fin_contrato">Fin contrato</option>
+                  <option value="acta_recibo_final">Acta recibo final</option>
+                  <option value="firma_contrato">Firma contrato</option>
+                  <option value="otra">Otra</option>
+                </select>
+              </label>
+              {amparo.fecha_hasta_manual ? (
+                <p className="text-xs leading-5 text-neutral-500 md:col-span-2">
+                  El periodo adicional no se aplica mientras la fecha fin manual
+                  esté activa.
+                </p>
+              ) : (
+                <>
+                  <EditableAmparoField
+                    label="Periodo adicional"
+                    type="text"
+                    inputMode="numeric"
+                    value={amparo.periodo_cantidad}
+                    onChange={(value) => onChange("periodo_cantidad", value)}
+                    help={
+                      calculation.dias_adicionales === null
+                        ? "Vacío aplica la regla automática."
+                        : `Equivale a ${calculation.dias_adicionales} días.`
+                    }
+                  />
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-neutral-700">
+                      Unidad
+                    </span>
+                    <select
+                      value={amparo.periodo_unidad}
+                      onChange={(event) =>
+                        onChange("periodo_unidad", event.target.value)
+                      }
+                      className={selectClass}
+                    >
+                      <option value="dias">Días</option>
+                      <option value="meses">Meses</option>
+                      <option value="anios">Años</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              aria-expanded={datesOpen}
+              onClick={() => setDatesOpen((value) => !value)}
+              className="text-sm font-semibold text-[#b94d28] underline-offset-2 hover:underline"
+            >
+              {datesOpen ? "Ocultar fechas manuales" : "Ajustar fechas manualmente"}
+              {!datesOpen && manualDatesActive ? " · activo" : ""}
+            </button>
+            {datesOpen ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <ManualDateOverride
+                  checkboxLabel="Usar fecha inicio manual para este amparo"
+                  fieldLabel="Fecha inicio manual"
+                  checked={amparo.fecha_desde_manual}
+                  value={amparo.fecha_desde}
+                  onCheckedChange={(checked) =>
+                    onDateOverride(
+                      "fecha_desde_manual",
+                      "fecha_desde",
+                      checked,
+                      calculation.fecha_desde,
+                    )
+                  }
+                  onValueChange={(value) => onChange("fecha_desde", value)}
+                  warning={
+                    amparo.fecha_desde_manual
+                      ? getRequiredDateInputIssue("Fecha inicio manual", amparo.fecha_desde)
+                      : null
+                  }
+                />
+                <ManualDateOverride
+                  checkboxLabel="Usar fecha fin manual para este amparo"
+                  fieldLabel="Fecha fin manual"
+                  checked={amparo.fecha_hasta_manual}
+                  value={amparo.fecha_hasta}
+                  onCheckedChange={(checked) =>
+                    onDateOverride(
+                      "fecha_hasta_manual",
+                      "fecha_hasta",
+                      checked,
+                      calculation.fecha_hasta,
+                    )
+                  }
+                  onValueChange={(value) => onChange("fecha_hasta", value)}
+                  warning={
+                    amparo.fecha_hasta_manual
+                      ? getRequiredDateInputIssue("Fecha fin manual", amparo.fecha_hasta)
+                      : null
+                  }
+                />
+                <p className="text-xs leading-5 text-neutral-500 md:col-span-2">
+                  Úselas solo si la póliza tiene una vigencia distinta a la del
+                  contrato.
+                </p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-3">
+            <SectionTitle>Prima</SectionTitle>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <EditableAmparoField
+                label="Tasa (%)"
+                type="text"
+                inputMode="decimal"
+                value={amparo.tasa}
+                onChange={(value) => onChange("tasa", value)}
+                help="Digite 0.20 para una tasa de 0,20%. No use 20."
+                warning={rateIssue}
+              />
+            </div>
+            <label className="flex min-h-10 items-center gap-3 rounded-lg border border-neutral-300 bg-white px-3 py-2">
+              <input
+                type="checkbox"
+                checked={amparo.usar_prima_neta_manual}
+                onChange={(event) =>
+                  onChange("usar_prima_neta_manual", event.target.checked)
+                }
+                className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
+              />
+              <span>
+                <span className="block text-sm font-medium text-neutral-800">
+                  Usar prima neta manual
+                </span>
+                <span className="block text-xs leading-5 text-neutral-500">
+                  Mantiene este valor aunque cambien tasa, fechas o días.
+                </span>
+              </span>
+            </label>
+            {amparo.usar_prima_neta_manual ? (
+              <div className="max-w-sm">
+                <EditableAmparoField
+                  label="Prima neta manual"
+                  type="text"
+                  inputMode="decimal"
+                  value={amparo.prima_neta_manual}
+                  onChange={(value) => onChange("prima_neta_manual", value)}
+                  onBlur={(value) =>
+                    onChange("prima_neta_manual", formatCurrencyInputValue(value))
+                  }
+                  help={`El IVA y la prima total se calculan sobre este valor. Prima automática de referencia: ${formatCurrency(calculation.prima_neta_automatica, currency)}.`}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          {calculation.subamparos.length > 0 ? (
+            <SubcoverageEditor
+              subamparos={calculation.subamparos}
+              currency={currency}
+              mainInsuredValue={calculation.valor_asegurado}
+              onChange={(nextSubamparos) => onChange("subamparos", nextSubamparos)}
+            />
+          ) : null}
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              aria-expanded={detailOpen}
+              onClick={() => setDetailOpen((value) => !value)}
+              className="text-sm font-semibold text-[#b94d28] underline-offset-2 hover:underline"
+            >
+              {detailOpen ? "Ocultar detalle y evidencia" : "Detalle y evidencia"}
+            </button>
+            {detailOpen ? (
+              <div className="space-y-4 rounded-lg border border-neutral-200 bg-white p-4">
+                {isManual ? null : (
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-neutral-600">
+                    <span className="inline-flex items-center gap-2">
+                      <ConfidenceDot confidence={amparo.confianza} />
+                      {getConfidenceLabel(amparo.confianza) ?? "Confianza sin dato"}
+                    </span>
+                    <span>Página {amparo.fuente_pagina || "sin dato"}</span>
+                  </div>
+                )}
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-neutral-700">
+                    {isManual ? "Fuente / soporte (opcional)" : "Fuente"}
+                  </span>
+                  <textarea
+                    value={amparo.fuente_texto}
+                    onChange={(event) => onChange("fuente_texto", event.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-neutral-700">
+                    Motivo de revisión
+                  </span>
+                  <textarea
+                    value={reviewReason}
+                    onChange={(event) => onChange("motivo_revision", event.target.value)}
+                    rows={2}
+                    className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#d25b30] focus:ring-4 focus:ring-[#d25b30]/15"
+                  />
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-neutral-600">
+                  <input
+                    type="checkbox"
+                    checked={amparo.requiere_revision || Boolean(calculation.motivo_revision)}
+                    onChange={(event) =>
+                      onChange("requiere_revision", event.target.checked)
+                    }
+                    className="h-4 w-4 rounded border-neutral-300 text-[#d25b30] focus:ring-[#d25b30]"
+                  />
+                  Requiere revisión
+                </label>
+                <dl className="grid gap-3 text-sm sm:grid-cols-3">
+                  <SummaryItem
+                    label="IVA"
+                    value={`${formatPercent(calculation.iva_porcentaje)}%`}
+                  />
+                  {isAdvance ? (
+                    <SummaryItem
+                      label="Criterio base"
+                      value={getAdvanceBaseCriterion(calculation, form)}
+                    />
+                  ) : null}
+                  {isAdvance ? (
+                    <SummaryItem
+                      label="Origen anticipo"
+                      value={getAdvanceBaseOrigin(amparo, form)}
+                    />
+                  ) : null}
+                </dl>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function SourceBlock({ source }: { source?: SourceMeta }) {
+  const [open, setOpen] = useState(false);
+
   if (!source) {
     return null;
   }
 
+  const level = source.confianza ?? null;
+  const hasFragment = Boolean(source.fuente);
+  const hasPage = source.pagina !== null && source.pagina !== undefined;
+  const emphasized = level === "baja" || level === "media";
+
+  if (!hasFragment && !hasPage && !emphasized) {
+    return null;
+  }
+
   return (
-    <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+    <div className="text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <ConfidenceBadge confidence={source.confianza} />
-        <span className="text-xs font-medium text-neutral-500">
-          Página {source.pagina ?? "sin dato"}
+        <ConfidenceDot confidence={level} />
+        <span
+          className={
+            level === "baja"
+              ? "font-semibold text-rose-700"
+              : level === "media"
+                ? "font-semibold text-amber-700"
+                : "text-neutral-500"
+          }
+        >
+          {hasPage ? `Pág. ${source.pagina}` : "Sin evidencia en el documento"}
         </span>
+        {hasFragment ? (
+          <>
+            <span aria-hidden className="text-neutral-300">
+              ·
+            </span>
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen((value) => !value)}
+              className="font-semibold text-[#b94d28] underline-offset-2 hover:underline"
+            >
+              {open ? "Ocultar fuente" : "Ver fuente"}
+            </button>
+          </>
+        ) : null}
       </div>
-      {source.fuente ? (
-        <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-neutral-600">
+      {open && hasFragment ? (
+        <p className="mt-2 whitespace-pre-wrap rounded-lg border border-neutral-200 bg-neutral-50 p-3 leading-5 text-neutral-600">
           {source.fuente}
         </p>
       ) : null}
@@ -2721,6 +3102,7 @@ function amparoToEditable(
   const tasa = amparo.tasa ?? suggestedRate;
 
   return {
+    uid: `db-${amparo.id}`,
     id: amparo.id,
     tipo_amparo: amparo.tipo_amparo,
     porcentaje: percentFromDecimal(amparo.porcentaje),
@@ -2798,7 +3180,10 @@ function amparoToEditable(
 }
 
 function newAmparo(): EditableAmparo {
+  newAmparoSequence += 1;
+
   return {
+    uid: `new-${newAmparoSequence}`,
     tipo_amparo: "",
     porcentaje: "",
     cuantia_fija: "",
@@ -3242,29 +3627,6 @@ function getCalculationBase(contract: ContractForm) {
     numberOrNull(contract.valor_contrato);
 }
 
-function getCoverageBaseLabel(calculation: ReturnType<typeof calculateEditableAmparo>) {
-  if (calculation.modo_calculo === "anticipo_100") {
-    return "Base anticipo usada";
-  }
-
-  if (
-    calculation.modo_calculo === "cuantia_fija" &&
-    calculation.tipo_amparo === "responsabilidad_civil_extracontractual"
-  ) {
-    return "Cuantía RCE";
-  }
-
-  if (calculation.modo_calculo === "cuantia_fija") {
-    return "Cuantía fija";
-  }
-
-  if (calculation.modo_calculo === "porcentaje_valor_contrato") {
-    return "Valor contrato usado";
-  }
-
-  return "Base cálculo";
-}
-
 function getCoverageBaseDisplayValue(
   calculation: ReturnType<typeof calculateEditableAmparo>,
 ) {
@@ -3514,10 +3876,6 @@ function parseSubamparos(value: Amparo["subamparos"]): CoverageSubamparo[] {
       } satisfies CoverageSubamparo;
     })
     .filter((item): item is CoverageSubamparo => item !== null);
-}
-
-function getCalculableSubamparo(subamparos: CoverageSubamparo[]) {
-  return subamparos.find((subamparo) => subamparo.calculable) ?? null;
 }
 
 function formatPercent(value: number | null | undefined) {
